@@ -1,5 +1,35 @@
 # Release Notes
 
+## 2026-05-25
+
+### VIDÉO LIVE — enfin débloquée (864x480 H.264)
+- **Bug critique #1 — ACK transport manquant** : les frames WITHACK reçues (buf 126) n'étaient jamais ACKées, le SC2 retransmettait en boucle et considérait le client non-réactif. Fix : envoi automatique d'ACK (dataType=1, bufferId|0x80, même seq) dans `handleChan1`. Résultat : 11 KB → 56 MB de données reçues.
+- **Bug critique #2 — format vidéo chan 4 = RTP brut** : le fallback `ArStreamReader` (header v1 5B) assemblait du garbage. Diagnostic hex ajouté (`chan4RawHead`, `assembledFrameHead`) → identifié `80 e0` = RTP version 2, PT=96. Fix : détection `byte[0] & 0xC0 == 0x80` → `rtpDepayloader.feed()`. SPS/PPS extraits des STAP-A (NAL type 24), décodeur H.264 initialisé.
+- `ArCommand.videoStreamMode(mode)` ajouté — envoyé avant `VideoEnable(1)` dans le flow "Start video"
+
+### Écran pilotage avec joysticks flottants
+- `ui/PilotScreen.kt` (nouveau) : vidéo plein écran, HUD (status, batteries, indicateur REC), boutons ARMER/DÉCOLLER/ATTERRIR/STOP/URGENCE/REC
+- `ui/FloatingJoystick.kt` (nouveau) : joystick apparaît où le pouce se pose, disparaît au relâcher, gauche=gaz/yaw droite=pitch/roll, multi-touch via zones séparées
+- `HorizontalPager` (2 pages) : swipe gauche=pilotage, droite=debug
+- Dépendance `androidx.compose.foundation:foundation` ajoutée
+
+### Refactoring parsing transport
+- `handleChan1` réécrit pour utiliser `ArsdkTransport.decodeAll()` (respecte le champ `size` du header) au lieu de deviner 7/11 bytes — corrige potentiellement la batterie drone non reçue
+- `parseArCommand()` unifié : plus de split `tryIterate`/`iterateArCommands`, toutes les ARCommands (connues ou inconnues) passent par le même path
+- `iterateArCommands()` et `tryIterate()` supprimés
+
+### Enregistrement vidéo drone
+- `ArCommand.videoRecord(start)` : ardrone3.MediaRecord.VideoV2 (prj=1 cls=3 cmd=1)
+- `ArsdkIds.ARDRONE3_VIDEO_RECORD_STATE` (1,7,3) : parsing VideoStateChangedV2 (stopped/started/failed/autostopped)
+- Bouton REC/STOP REC dans PilotScreen + indicateur "● REC" rouge dans le HUD
+
+### Divers
+- `FLAG_KEEP_SCREEN_ON` — plus de mise en veille pendant le pilotage
+- Compteur C2D envoyées (`c2dSent` StateFlow) visible dans la page debug
+- `startPilotingLoop()` / `stopPilotingLoop()` exposés publiquement dans le ViewModel
+- Repo Git initialisé + publié sur https://github.com/ddaydd/bebop
+- README.md avec architecture, build, usage, découvertes clés
+
 ## 2026-05-23
 
 ### Recherche vidéo Bebop 2 — théorie verrouillée via doc Parrot officielle
