@@ -302,7 +302,7 @@ private fun LinkStateCard(
                 "Batterie drone",
                 droneBattery?.let { "$it %" } ?: "non reçu",
                 droneBattery != null,
-                detail = "Common.CommonState.BatteryStateChanged (prj=0 cls=5 cmd=1)",
+                detail = "Common.CommonState.BatteryStateChanged (prj=0 cls=1 cmd=1)",
             )
             LinkRow(
                 "Batterie SC2",

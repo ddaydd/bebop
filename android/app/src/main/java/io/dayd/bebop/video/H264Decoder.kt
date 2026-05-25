@@ -2,6 +2,7 @@ package io.dayd.bebop.video
 
 import android.media.MediaCodec
 import android.media.MediaFormat
+import android.util.Log
 import android.view.Surface
 import java.nio.ByteBuffer
 
@@ -41,6 +42,7 @@ class H264Decoder(private val surface: Surface) {
         try {
             if (codec == null) {
                 val spsPps = H264Nal.extractSpsPps(data) ?: return
+                Log.i(TAG, "SPS/PPS trouvé — configuration du décodeur (${spsPps.first.size}B / ${spsPps.second.size}B)")
                 configureCodec(spsPps.first, spsPps.second)
             }
             val c = codec ?: return
@@ -55,10 +57,13 @@ class H264Decoder(private val surface: Surface) {
                 val flags = if (isKey) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0
                 c.queueInputBuffer(idx, 0, data.size, pts, flags)
                 framesQueued++
+                if (framesQueued == 1L) Log.i(TAG, "première frame envoyée au décodeur (${data.size}B, key=$isKey)")
+                if (framesQueued % 300 == 0L) Log.d(TAG, "décodeur: $framesQueued frames, ${outputWidth}x${outputHeight}")
             }
             drain()
         } catch (t: Throwable) {
             lastError = t.message ?: t::class.java.simpleName
+            Log.e(TAG, "erreur décodeur: ${t.message}", t)
         }
     }
 
@@ -72,6 +77,11 @@ class H264Decoder(private val surface: Surface) {
         c.start()
         codec = c
         configured = true
+        Log.i(TAG, "décodeur H.264 configuré et démarré")
+    }
+
+    companion object {
+        private const val TAG = "Bebop"
     }
 
     private fun drain() {
@@ -82,6 +92,7 @@ class H264Decoder(private val surface: Surface) {
                 val fmt = c.outputFormat
                 outputWidth = runCatching { fmt.getInteger(MediaFormat.KEY_WIDTH) }.getOrDefault(0)
                 outputHeight = runCatching { fmt.getInteger(MediaFormat.KEY_HEIGHT) }.getOrDefault(0)
+                Log.i(TAG, "décodeur output: ${outputWidth}x${outputHeight}")
                 continue
             }
             if (idx < 0) break

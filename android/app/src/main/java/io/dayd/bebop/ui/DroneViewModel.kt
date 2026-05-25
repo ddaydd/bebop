@@ -1,6 +1,7 @@
 package io.dayd.bebop.ui
 
 import android.app.Application
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import io.dayd.bebop.aoa.AoaController
@@ -27,6 +28,7 @@ import io.dayd.bebop.network.getGatewaysFromContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 sealed interface ConnectionState {
@@ -82,8 +84,58 @@ class DroneViewModel(app: Application) : AndroidViewModel(app) {
     private val _usb = MutableStateFlow(UsbReport(emptyList(), emptyList()))
     val usb: StateFlow<UsbReport> = _usb.asStateFlow()
 
+    private val _autoStatus = MutableStateFlow("Recherche du SC2…")
+    val autoStatus: StateFlow<String> = _autoStatus.asStateFlow()
+
     init {
         refreshDiagnostic()
+        viewModelScope.launch { autoConnect() }
+    }
+
+    private suspend fun autoConnect() {
+        Log.i(TAG, "autoConnect: début de la séquence")
+        _autoStatus.value = "Ouverture USB AOA…"
+        aoaController.connectFirstAvailable()
+        val aoaResult = aoaController.state.first { it is AoaState.Open || it is AoaState.Error }
+        if (aoaResult is AoaState.Error) {
+            Log.w(TAG, "autoConnect: AOA échoué — ${aoaResult.message}")
+            _autoStatus.value = "Erreur AOA — brancher le SC2"
+            return
+        }
+        Log.i(TAG, "autoConnect: AOA ouvert")
+
+        _autoStatus.value = "Handshake MUX…"
+        aoaController.sendHandshake(isAck = false)
+        aoaController.ctrlHistory.first { it.isNotEmpty() }
+        Log.i(TAG, "autoConnect: handshake OK — canaux MUX ouverts")
+
+        _autoStatus.value = "Découverte des appareils…"
+        aoaController.sendDiscover()
+        val devices = aoaController.devices.first { it.isNotEmpty() }
+        Log.i(TAG, "autoConnect: ${devices.size} device(s) trouvé(s) — ${devices.first().name}")
+
+        val dev = devices.first()
+        _autoStatus.value = "Connexion à ${dev.name}…"
+        aoaController.sendConnect(dev.id)
+        val resp = aoaController.connResp.first { it != null && it.status == 0 }
+        Log.i(TAG, "autoConnect: CONN_RESP ok — ${resp!!.json.take(80)}")
+
+        _autoStatus.value = "Ouverture flux vidéo…"
+        kotlinx.coroutines.delay(300)
+        val sc2ok = aoaController.sendAllStates(io.dayd.bebop.arsdk.ArsdkIds.PRJ_SKYCTRL)
+        val droneOk = aoaController.sendAllStates(io.dayd.bebop.arsdk.ArsdkIds.PRJ_COMMON)
+        Log.i(TAG, "autoConnect: AllStates SC2=$sc2ok drone=$droneOk")
+        aoaController.sendOpenStreamChannels()
+        kotlinx.coroutines.delay(200)
+        aoaController.sendVideoStreamMode(0)
+        kotlinx.coroutines.delay(200)
+        aoaController.sendVideoEnable(true)
+        Log.i(TAG, "autoConnect: séquence complète — vidéo demandée")
+        _autoStatus.value = "Connecté"
+    }
+
+    companion object {
+        private const val TAG = "Bebop"
     }
 
     fun setHost(value: String) {

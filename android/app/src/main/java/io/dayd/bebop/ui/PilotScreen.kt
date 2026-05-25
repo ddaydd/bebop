@@ -16,6 +16,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -43,6 +44,7 @@ fun PilotScreen(vm: DroneViewModel) {
     val connResp by vm.aoaConnResp.collectAsStateWithLifecycle()
     val videoFrames by vm.aoaVideoFrames.collectAsStateWithLifecycle()
 
+    val autoStatus by vm.autoStatus.collectAsStateWithLifecycle()
     val recordState by vm.videoRecordState.collectAsStateWithLifecycle()
     val recording = recordState == 1
     val connected = aoaState is io.dayd.bebop.aoa.AoaState.Open && connResp != null
@@ -118,6 +120,25 @@ fun PilotScreen(vm: DroneViewModel) {
                 droneBatt?.let { HudText("Drone $it%") }
                 sc2Batt?.let { HudText("SC2 $it%") }
                 HudText("Swipe →")
+            }
+        }
+
+        // Connection status overlay
+        if (!connected) {
+            val isError = aoaState is io.dayd.bebop.aoa.AoaState.Error
+            Column(
+                modifier = Modifier.align(Alignment.Center),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                if (!isError) {
+                    CircularProgressIndicator(color = Color.White)
+                }
+                Text(
+                    autoStatus,
+                    color = if (isError) Color(0xFFFF5252) else Color.White,
+                    fontSize = 16.sp,
+                )
             }
         }
 

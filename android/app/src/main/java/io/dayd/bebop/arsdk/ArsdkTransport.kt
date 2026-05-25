@@ -196,7 +196,8 @@ object ArsdkIds {
     const val PRJ_SKYCTRL = 4
 
     // Common.CommonState.BatteryStateChanged (drone) — 1 arg u8 percent.
-    val COMMON_BATTERY = Triple(0, 5, 1)
+    // cls=1 (CommonState), pas cls=5 (SettingsState).
+    val COMMON_BATTERY = Triple(0, 1, 1)
 
     // SkyController.SkyControllerState.BatteryChanged (SC2) — 1 arg u8 percent.
     val SKYCTRL_BATTERY = Triple(4, 8, 0)
@@ -205,7 +206,8 @@ object ArsdkIds {
     val SKYCTRL_ATTITUDE = Triple(4, 8, 4)
 
     // Requête : Common.Common.AllStates → device répond avec tous ses *StateChanged.
-    val COMMON_ALL_STATES = Triple(0, 4, 0)
+    // cls=0 (Common), pas cls=4 (Controller).
+    val COMMON_ALL_STATES = Triple(0, 0, 0)
 
     // Requête : skyctrl.Common.AllStates → SC2 répond avec tous ses SkyControllerState.*.
     val SKYCTRL_ALL_STATES = Triple(4, 6, 0)

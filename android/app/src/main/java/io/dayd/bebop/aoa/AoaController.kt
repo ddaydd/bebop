@@ -3,6 +3,7 @@ package io.dayd.bebop.aoa
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
+import android.util.Log
 import android.content.Intent
 import android.content.IntentFilter
 import android.hardware.usb.UsbAccessory
@@ -236,9 +237,12 @@ class AoaController(private val appContext: Context) {
         if (marker) {
             val frame = rtpAccessUnit.toByteArray()
             rtpAccessUnit.reset()
-            _videoFrameCount.value = _videoFrameCount.value + 1
+            val count = _videoFrameCount.value + 1
+            _videoFrameCount.value = count
             _videoLastFrameSize.value = frame.size
             _videoLastFrameFlags.value = if (marker) 1 else 0
+            if (count == 1L) Log.i(TAG, "première access unit RTP assemblée (${frame.size}B)")
+            if (count % 300 == 0L) Log.d(TAG, "RTP: $count access units, ${frame.size}B dernière")
             videoFrameSink?.invoke(frame, true)
         }
     }
@@ -607,6 +611,7 @@ class AoaController(private val appContext: Context) {
         _transportStats.value = emptyMap()
         _chan1Raw.value = null
         _state.value = AoaState.Open(accessory)
+        Log.i(TAG, "AOA ouvert: ${accessory.manufacturer}/${accessory.model}")
         readerJob = scope.launch { readLoop(t) }
     }
 
@@ -650,6 +655,9 @@ class AoaController(private val appContext: Context) {
             }
             if (f.chanid == 1) { handleChan1(f.payload); continue }
             if (f.chanid == MUX_ARSDK_CHANNEL_ID_STREAM_DATA) {
+                if (_frameStats.value[MUX_ARSDK_CHANNEL_ID_STREAM_DATA] == 1L) {
+                    Log.i(TAG, "premier paquet chan 4 reçu (${f.payload.size}B)")
+                }
                 val take4 = f.payload.size.coerceAtMost(32)
                 _chan4RawHead.value = "[${f.payload.size}B] " +
                     f.payload.copyOfRange(0, take4).joinToString(" ") { "%02x".format(it) }
@@ -770,7 +778,9 @@ class AoaController(private val appContext: Context) {
         val tuple = Triple(prj, cls, cmd)
         val args = body.copyOfRange(4, body.size)
         _arCmdLast.value = ArCommandHeader(prj, cls, cmd, args)
-        _arCmdStats.update { map -> map + (tuple to ((map[tuple] ?: 0L) + 1L)) }
+        val prevCount = _arCmdStats.value[tuple] ?: 0L
+        _arCmdStats.update { map -> map + (tuple to (prevCount + 1L)) }
+        if (prevCount == 0L) Log.d(TAG, "ARCmd nouveau tuple: prj=$prj cls=$cls cmd=$cmd args=${args.size}B")
         if (tuple == ArsdkIds.COMMON_PRODUCT_VERSION) {
             val sw = readCString(args, 0)
             val hw = if (sw != null) readCString(args, sw.length + 1) else null
@@ -780,10 +790,20 @@ class AoaController(private val appContext: Context) {
             return
         }
         when (tuple) {
-            ArsdkIds.COMMON_BATTERY ->
-                if (args.isNotEmpty()) _droneBatteryPercent.value = args[0].toInt() and 0xff
-            ArsdkIds.SKYCTRL_BATTERY ->
-                if (args.isNotEmpty()) _sc2BatteryPercent.value = args[0].toInt() and 0xff
+            ArsdkIds.COMMON_BATTERY -> {
+                if (args.isNotEmpty()) {
+                    val pct = args[0].toInt() and 0xff
+                    Log.i(TAG, "batterie drone: $pct%")
+                    _droneBatteryPercent.value = pct
+                }
+            }
+            ArsdkIds.SKYCTRL_BATTERY -> {
+                if (args.isNotEmpty()) {
+                    val pct = args[0].toInt() and 0xff
+                    Log.i(TAG, "batterie SC2: $pct%")
+                    _sc2BatteryPercent.value = pct
+                }
+            }
             ArsdkIds.ARDRONE3_VIDEO_RECORD_STATE ->
                 if (args.size >= 4) _videoRecordState.value = readU32Le(args, 0)
             ArsdkIds.ARDRONE3_VIDEO_ENABLE_CHANGED ->
@@ -826,6 +846,10 @@ class AoaController(private val appContext: Context) {
         val hex = buf.copyOfRange(0, take).joinToString(" ") { "%02x".format(it) }
         val line = "[${n}B] $hex${if (n > take) "…" else ""}"
         _logTail.update { list -> (list + line).takeLast(20) }
+    }
+
+    companion object {
+        private const val TAG = "Bebop"
     }
 }
 

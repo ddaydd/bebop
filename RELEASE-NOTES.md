@@ -1,6 +1,27 @@
 # Release Notes
 
-## 2026-05-25
+## 2026-05-25 (session 8)
+
+### Auto-connect au démarrage
+- `DroneViewModel.autoConnect()` : séquence automatique AOA → Handshake → Discover → Connect → AllStates → OpenStreamChannels → VideoStreamMode → VideoEnable
+- `PilotScreen` : overlay central avec spinner + texte de progression (ou message d'erreur en rouge) quand pas connecté
+- Plus besoin de toucher les boutons manuels dans la page debug
+
+### Mode immersif Android 17
+- `enableEdgeToEdge()` + `window.insetsController.hide(systemBars())` dans `onWindowFocusChanged` (API plateforme au lieu de la lib compat)
+- Note : un appel téléphonique en cours force Android à garder la barre visible (`forciblyShownTypes=statusBars`)
+
+### Logging tag "Bebop"
+- `Log.i/d/w/e("Bebop", ...)` ajouté dans `DroneViewModel` (auto-connect), `AoaController` (AOA, chan 4, RTP, ARCommands, batteries), `H264Decoder` (SPS/PPS, codec config, output, erreurs)
+- Chaque nouveau tuple ARCommand logué à la première occurrence
+- Stats périodiques toutes les 300 frames (RTP + décodeur)
+
+### Bugfix — tuples ARSDK incorrects
+- `COMMON_BATTERY` corrigé : `Triple(0, 5, 1)` → `Triple(0, 1, 1)` (cls=1 CommonState, pas cls=5 SettingsState)
+- `COMMON_ALL_STATES` corrigé : `Triple(0, 4, 0)` → `Triple(0, 0, 0)` (cls=0 Common, pas cls=4 Controller)
+- Ces bugs empêchaient la réception de la batterie drone et l'envoi correct de la requête AllStates
+
+## 2026-05-25 (session 7)
 
 ### VIDÉO LIVE — enfin débloquée (864x480 H.264)
 - **Bug critique #1 — ACK transport manquant** : les frames WITHACK reçues (buf 126) n'étaient jamais ACKées, le SC2 retransmettait en boucle et considérait le client non-réactif. Fix : envoi automatique d'ACK (dataType=1, bufferId|0x80, même seq) dans `handleChan1`. Résultat : 11 KB → 56 MB de données reçues.
