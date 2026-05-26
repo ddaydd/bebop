@@ -3,7 +3,7 @@ package io.dayd.bebop.aoa
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
-import android.util.Log
+import io.dayd.bebop.FileLogger as Log
 import android.content.Intent
 import android.content.IntentFilter
 import android.hardware.usb.UsbAccessory
@@ -186,6 +186,27 @@ class AoaController(private val appContext: Context) {
     /** Hex (premiers ~32 octets) du dernier payload MUX chan 1, avant tout décodage. */
     private val _chan1Raw = MutableStateFlow<String?>(null)
     val chan1Raw: StateFlow<String?> = _chan1Raw.asStateFlow()
+
+    data class Sc2WifiEntry(val bssid: String, val ssid: String, val secured: Boolean, val saved: Boolean, val rssi: Int, val freq: Int)
+
+    private val _sc2WifiList = MutableStateFlow<List<Sc2WifiEntry>>(emptyList())
+    val sc2WifiList: StateFlow<List<Sc2WifiEntry>> = _sc2WifiList.asStateFlow()
+
+    private val _sc2WifiConnected = MutableStateFlow<String?>(null)
+    val sc2WifiConnected: StateFlow<String?> = _sc2WifiConnected.asStateFlow()
+
+    // skyctrl.DeviceState.ConnexionChanged : status enum 0=notConnected 1=connecting 2=connected 3=disconnecting
+    private val _sc2DroneConnectionState = MutableStateFlow<Int?>(null)
+    val sc2DroneConnectionState: StateFlow<Int?> = _sc2DroneConnectionState.asStateFlow()
+
+    data class DmConnectionState(val state: Int, val serial: String, val model: Int, val name: String)
+    data class DmDroneItem(val serial: String, val model: Int, val name: String, val connectionOrder: Int, val active: Boolean, val visible: Int, val security: Int, val hasSavedKey: Boolean, val rssi: Int)
+
+    private val _dmConnectionState = MutableStateFlow<DmConnectionState?>(null)
+    val dmConnectionState: StateFlow<DmConnectionState?> = _dmConnectionState.asStateFlow()
+
+    private val _dmDroneList = MutableStateFlow<List<DmDroneItem>>(emptyList())
+    val dmDroneList: StateFlow<List<DmDroneItem>> = _dmDroneList.asStateFlow()
 
     // Map slave_chanid → label sémantique (déduit de l'ordre de réception des
     // CHANNEL_OPEN type=IP_SLAVE — le 1er répond à notre 1024 RTP video, le 2e
@@ -486,6 +507,53 @@ class AoaController(private val appContext: Context) {
         bufferId = ArsdkTransport.BUFFER_ID_C2D_CMD_WITHACK,
     )
 
+    suspend fun sendDmDiscoverDrones(): Boolean {
+        Log.i(TAG, "C2D: dm_discover_drones (137,0,1)")
+        _dmDroneList.value = emptyList()
+        return sendArCommand(
+            payload = ArCommand.noArgs(137, 0, 1),
+            dataType = ArsdkTransport.DATA_TYPE_WITHACK,
+            bufferId = ArsdkTransport.BUFFER_ID_C2D_CMD_WITHACK,
+        )
+    }
+
+    suspend fun sendDmConnect(serial: String, key: String = ""): Boolean = sendArCommand(
+        payload = ArCommand.dmConnect(serial, key),
+        dataType = ArsdkTransport.DATA_TYPE_WITHACK,
+        bufferId = ArsdkTransport.BUFFER_ID_C2D_CMD_WITHACK,
+    )
+
+    suspend fun sendDmForget(serial: String): Boolean = sendArCommand(
+        payload = ArCommand.noArgs(137, 0, 4).let { hdr ->
+            val serialBytes = serial.toByteArray(Charsets.UTF_8)
+            hdr + serialBytes + byteArrayOf(0)
+        },
+        dataType = ArsdkTransport.DATA_TYPE_WITHACK,
+        bufferId = ArsdkTransport.BUFFER_ID_C2D_CMD_WITHACK,
+    )
+
+    suspend fun sendSc2WifiScan(): Boolean {
+        Log.i(TAG, "C2D: sc2_wifi_scan (4,1,0)")
+        _sc2WifiList.value = emptyList()
+        return sendArCommand(
+            payload = ArCommand.noArgs(4, 1, 0),
+            dataType = ArsdkTransport.DATA_TYPE_WITHACK,
+            bufferId = ArsdkTransport.BUFFER_ID_C2D_CMD_WITHACK,
+        )
+    }
+
+    suspend fun sendSc2WifiRequestCurrent(): Boolean = sendArCommand(
+        payload = ArCommand.noArgs(4, 1, 1),
+        dataType = ArsdkTransport.DATA_TYPE_WITHACK,
+        bufferId = ArsdkTransport.BUFFER_ID_C2D_CMD_WITHACK,
+    )
+
+    suspend fun sendSc2WifiConnect(bssid: String, ssid: String, passphrase: String = ""): Boolean = sendArCommand(
+        payload = ArCommand.sc2WifiConnect(bssid, ssid, passphrase),
+        dataType = ArsdkTransport.DATA_TYPE_WITHACK,
+        bufferId = ArsdkTransport.BUFFER_ID_C2D_CMD_WITHACK,
+    )
+
     /** Envoie un PCMD instantané (un seul shot — pour la boucle, voir startPilotingLoop). */
     suspend fun sendPcmd(roll: Int, pitch: Int, yaw: Int, gaz: Int, timestamp: Int): Boolean {
         val flag = if (roll != 0 || pitch != 0) 1 else 0
@@ -781,6 +849,58 @@ class AoaController(private val appContext: Context) {
         val prevCount = _arCmdStats.value[tuple] ?: 0L
         _arCmdStats.update { map -> map + (tuple to (prevCount + 1L)) }
         if (prevCount == 0L) Log.d(TAG, "ARCmd nouveau tuple: prj=$prj cls=$cls cmd=$cmd args=${args.size}B")
+        if (prj == 1 && prevCount == 0L) Log.i(TAG, "première ARCmd ardrone3: cls=$cls cmd=$cmd — lien drone confirmé")
+        if (tuple == ArsdkIds.DM_CONNECTION_STATE) {
+            if (args.size >= 4) {
+                val state = readU32Le(args, 0)
+                val serial = readCString(args, 4)
+                if (serial != null) {
+                    val off = 4 + serial.length + 1
+                    val model = if (args.size >= off + 2) (args[off].toInt() and 0xff) or ((args[off + 1].toInt() and 0xff) shl 8) else 0
+                    val name = if (args.size > off + 2) readCString(args, off + 2) else null
+                    val stateLabel = when (state) { 0 -> "idle"; 1 -> "searching"; 2 -> "connecting"; 3 -> "connected"; 4 -> "disconnecting"; else -> "unknown=$state" }
+                    val prev = _dmConnectionState.value
+                    if (prev == null || prev.state != state) {
+                        Log.i(TAG, "drone_manager connection_state: $stateLabel serial=$serial model=$model name=${name ?: "?"}")
+                    }
+                    _dmConnectionState.value = DmConnectionState(state, serial, model, name ?: "")
+                    if (state == 3) _sc2DroneConnectionState.value = 2
+                    else if (state == 0 || state == 1) _sc2DroneConnectionState.value = 0
+                }
+            }
+            return
+        }
+        if (tuple == ArsdkIds.DM_DRONE_LIST_ITEM) {
+            val serial = readCString(args, 0)
+            if (serial != null) {
+                var off = serial.length + 1
+                if (args.size >= off + 2) {
+                    val model = (args[off].toInt() and 0xff) or ((args[off + 1].toInt() and 0xff) shl 8)
+                    off += 2
+                    val name = readCString(args, off)
+                    if (name != null) {
+                        off += name.length + 1
+                        if (args.size >= off + 4) {
+                            val connOrder = args[off].toInt() and 0xff
+                            val active = (args[off + 1].toInt() and 0xff) != 0
+                            val visible = args[off + 2].toInt() and 0xff
+                            val security = if (args.size >= off + 7) readU32Le(args, off + 3) else 0
+                            val hasSavedKey = if (args.size >= off + 8) (args[off + 7].toInt() and 0xff) != 0 else false
+                            val rssi = if (args.size >= off + 9) args[off + 8].toInt() else 0
+                            Log.i(TAG, "drone_manager drone_list: serial=$serial name=$name model=$model active=$active visible=$visible saved_key=$hasSavedKey rssi=$rssi")
+                            val item = DmDroneItem(serial, model, name, connOrder, active, visible, security, hasSavedKey, rssi)
+                            _dmDroneList.update { it + item }
+                        }
+                    }
+                }
+            }
+            return
+        }
+        if (tuple == ArsdkIds.DM_AUTH_FAILED) {
+            val serial = readCString(args, 0)
+            Log.w(TAG, "drone_manager auth_failed: serial=$serial")
+            return
+        }
         if (tuple == ArsdkIds.COMMON_PRODUCT_VERSION) {
             val sw = readCString(args, 0)
             val hw = if (sw != null) readCString(args, sw.length + 1) else null
@@ -810,8 +930,54 @@ class AoaController(private val appContext: Context) {
                 if (args.size >= 4) _videoEnableState.value = readU32Le(args, 0)
             ArsdkIds.ARDRONE3_VIDEO_STREAM_MODE_CHANGED ->
                 if (args.size >= 4) _videoStreamMode.value = readU32Le(args, 0)
+            ArsdkIds.SKYCTRL_WIFI_LIST -> {
+                val bssid = readCString(args, 0)
+                if (bssid != null) {
+                    val ssidOff = bssid.length + 1
+                    val ssid = readCString(args, ssidOff)
+                    if (ssid != null) {
+                        val metaOff = ssidOff + ssid.length + 1
+                        if (args.size >= metaOff + 10) {
+                            val secured = args[metaOff].toInt() != 0
+                            val saved = args[metaOff + 1].toInt() != 0
+                            val rssi = readI32Le(args, metaOff + 2)
+                            val freq = readI32Le(args, metaOff + 6)
+                            val entry = Sc2WifiEntry(bssid, ssid, secured, saved, rssi, freq)
+                            Log.i(TAG, "SC2 Wi-Fi: $ssid rssi=$rssi saved=$saved")
+                            _sc2WifiList.update { it + entry }
+                        }
+                    }
+                }
+            }
+            ArsdkIds.SKYCTRL_WIFI_CONNEXION_CHANGED -> {
+                val ssid = readCString(args, 0)
+                if (ssid != null) {
+                    val statusOff = ssid.length + 1
+                    if (args.size >= statusOff + 4) {
+                        val status = readU32Le(args, statusOff)
+                        val label = when (status) { 0 -> "connected"; 1 -> "error"; 2 -> "disconnected"; else -> "unknown=$status" }
+                        Log.i(TAG, "SC2 Wi-Fi connexion: ssid=$ssid status=$label")
+                        _sc2WifiConnected.value = if (status == 0) ssid else null
+                    }
+                }
+            }
+            ArsdkIds.SKYCTRL_DEVICE_CONNEXION_CHANGED -> {
+                val name = readCString(args, 0)
+                if (name != null) {
+                    val off = name.length + 1
+                    if (args.size >= off + 6) {
+                        val productId = (args[off].toInt() and 0xff) or ((args[off + 1].toInt() and 0xff) shl 8)
+                        val status = readU32Le(args, off + 2)
+                        val label = when (status) { 0 -> "notConnected"; 1 -> "connecting"; 2 -> "connected"; 3 -> "disconnecting"; else -> "unknown=$status" }
+                        Log.i(TAG, "SC2 drone connexion: name=$name pid=$productId status=$label")
+                        _sc2DroneConnectionState.value = status
+                    }
+                }
+            }
         }
     }
+
+    private fun readI32Le(buf: ByteArray, offset: Int): Int = readU32Le(buf, offset)
 
     private fun readU32Le(buf: ByteArray, offset: Int): Int =
         (buf[offset].toInt() and 0xff) or

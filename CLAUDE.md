@@ -71,3 +71,13 @@ Câble USB-A → USB-C standard "data" suffit (le SC2 est USB host, le Pixel est
 - Ordre d'allumage : **drone d'abord** (attendre LED fixe), **SC2 ensuite** (attendre LED verte fixe = connecté au drone).
 - Si LED SC2 reste orange clignotante : pas connecté. Reset usine SC2 = débrancher batterie 1-2 min.
 - L'appairage initial drone↔SC2 nécessitait FreeFlight Pro à l'origine (qui ne marche plus). Si le SC2 a déjà été apparié au drone, il se reconnecte tout seul.
+- **SC2 actuel a un problème Wi-Fi matériel** : module Wi-Fi probablement dégradé (oxydation patchs antenne). LED orange clignotante = "searching". Le SC2 connaît le drone (serial PI040384AG7C087996) mais ne capte pas son Wi-Fi, même à 1 mètre. Se connecte brièvement parfois puis perd la connexion. Piste : nettoyage alcool isopropylique des patchs antenne.
+- **Pas de port micro-USB** visible sur ce SC2 (carte MPP_MB_07). Pas d'accès ADB au SC2.
+
+## Connexion directe Pixel → Bebop 2 (Wi-Fi, sans SC2)
+
+- Le Bebop 2 crée un AP Wi-Fi `Bebop2-087996` en 2.4 GHz, sans sécurité, IP drone = 192.168.42.1.
+- **Android route par défaut via données mobiles** quand le Wi-Fi n'a pas d'internet. Utiliser `ConnectivityManager.requestNetwork(WIFI)` + `Network.bindSocket()` pour forcer le trafic sur le bon réseau.
+- Le drone n'accepte qu'**une seule session discovery** à la fois. Port 44444 refuse les connexions tant que la session précédente n'a pas timeout (~30s). Ou redémarrer le drone.
+- **Séquence d'init obligatoire** (source : bybop, pyparrot, libARController) : CurrentDate `(0,0,1)` + CurrentTime `(0,0,2)` → AllSettings `(0,2,0)` → attendre AllSettingsChanged `(0,3,0)` → AllStates `(0,0,0)` → attendre AllStatesChanged `(0,1,0)`.
+- **PCMD à 25Hz obligatoire** même avec sticks à zéro (flag=0). Sans PCMD, le drone considère le client mort après ~200ms et coupe la connexion UDP.

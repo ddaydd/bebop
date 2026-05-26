@@ -136,6 +136,36 @@ object ArCommand {
         return buf.array()
     }
 
+    // drone_manager.connect (137,0,3) — args : serial(str) + key(str)
+    fun dmConnect(serial: String, key: String = ""): ByteArray {
+        val serialBytes = serial.toByteArray(Charsets.UTF_8)
+        val keyBytes = key.toByteArray(Charsets.UTF_8)
+        val size = 4 + serialBytes.size + 1 + keyBytes.size + 1
+        val buf = ByteBuffer.allocate(size).order(ByteOrder.LITTLE_ENDIAN)
+        buf.put(137.toByte())
+        buf.put(0.toByte())
+        buf.putShort(3.toShort())
+        buf.put(serialBytes); buf.put(0)
+        buf.put(keyBytes); buf.put(0)
+        return buf.array()
+    }
+
+    // skyctrl.Wifi.ConnectToWifi (4,1,2) — args : bssid(str) + ssid(str) + passphrase(str)
+    fun sc2WifiConnect(bssid: String, ssid: String, passphrase: String): ByteArray {
+        val bssidBytes = bssid.toByteArray(Charsets.UTF_8)
+        val ssidBytes = ssid.toByteArray(Charsets.UTF_8)
+        val passBytes = passphrase.toByteArray(Charsets.UTF_8)
+        val size = 4 + bssidBytes.size + 1 + ssidBytes.size + 1 + passBytes.size + 1
+        val buf = ByteBuffer.allocate(size).order(ByteOrder.LITTLE_ENDIAN)
+        buf.put(4.toByte())              // prj skyctrl
+        buf.put(1.toByte())              // cls Wifi
+        buf.putShort(2.toShort())        // cmd ConnectToWifi
+        buf.put(bssidBytes); buf.put(0)
+        buf.put(ssidBytes); buf.put(0)
+        buf.put(passBytes); buf.put(0)
+        return buf.array()
+    }
+
     /** Décode l'entête `prj_u8 + cls_u8 + cmd_u16 LE` ; renvoie null si trop court. */
     fun decodeHeader(body: ByteArray): ArCommandHeader? {
         if (body.size < 4) return null
@@ -223,4 +253,22 @@ object ArsdkIds {
 
     // ardrone3.MediaStreamingState.VideoStreamModeChanged → enum u32 (low_latency / high_reliability / …).
     val ARDRONE3_VIDEO_STREAM_MODE_CHANGED = Triple(1, 22, 1)
+
+    // drone_manager (feature 137) — gestion connexion drone depuis le SC2
+    val DM_DISCOVER_DRONES = Triple(137, 0, 1)     // cmd: no args
+    val DM_DRONE_LIST_ITEM = Triple(137, 0, 2)     // evt: serial(str) + model(u16) + name(str) + connection_order(u8) + active(u8) + visible(u8) + security(u32) + has_saved_key(u8) + rssi(i8) + list_flags(u8)
+    val DM_CONNECT = Triple(137, 0, 3)             // cmd: serial(str) + key(str)
+    val DM_FORGET = Triple(137, 0, 4)              // cmd: serial(str)
+    val DM_CONNECTION_STATE = Triple(137, 0, 5)    // evt: state(u32 enum) + serial(str) + model(u16) + name(str)
+    val DM_AUTH_FAILED = Triple(137, 0, 6)         // evt: serial(str) + model(u16) + name(str)
+    val DM_KNOWN_DRONE_ITEM = Triple(137, 0, 8)   // evt: serial(str) + model(u16) + name(str) + security(u32) + has_saved_key(u8) + list_flags(u8)
+
+    // skyctrl.Wifi (prj=4 cls=1) — commandes Wi-Fi du SC2
+    val SKYCTRL_WIFI_REQUEST_LIST = Triple(4, 1, 0)
+    val SKYCTRL_WIFI_REQUEST_CURRENT = Triple(4, 1, 1)
+    // skyctrl.WifiState (prj=4 cls=0) — événements Wi-Fi du SC2
+    val SKYCTRL_WIFI_LIST = Triple(4, 0, 0)           // WifiList: bssid(str) + ssid(str) + secured(u8) + saved(u8) + rssi(i32) + freq(i32)
+    val SKYCTRL_WIFI_CONNEXION_CHANGED = Triple(4, 0, 1)  // ConnexionChanged: ssid(str) + status enum u32 (0=connected,1=error,2=disconnected)
+    // skyctrl.DeviceState (prj=4 cls=3) — état connexion drone
+    val SKYCTRL_DEVICE_CONNEXION_CHANGED = Triple(4, 3, 1)  // ConnexionChanged: name(str) + productID(u16) + status enum u32 (0=notConnected,1=connecting,2=connected,3=disconnecting)
 }

@@ -1,7 +1,7 @@
 package io.dayd.bebop.ui
 
 import android.app.Application
-import android.util.Log
+import io.dayd.bebop.FileLogger as Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import io.dayd.bebop.aoa.AoaController
@@ -41,6 +41,15 @@ sealed interface ConnectionState {
 data class HostProbe(val host: String, val reachable: Boolean? = null)
 
 class DroneViewModel(app: Application) : AndroidViewModel(app) {
+
+    private val directController = io.dayd.bebop.network.DirectController(app.applicationContext)
+    val directConnected: StateFlow<Boolean> = directController.connected
+    val directDroneBattery: StateFlow<Int?> = directController.droneBattery
+    val directDroneStatus: StateFlow<String> = directController.droneStatus
+    val directDroneFirmware: StateFlow<String?> = directController.droneFirmware
+
+    fun directConnect() { viewModelScope.launch { directController.connect() } }
+    fun directDisconnect() { directController.disconnect() }
 
     private val aoaController = AoaController(app.applicationContext)
     val aoaState: StateFlow<AoaState> = aoaController.state
@@ -89,34 +98,42 @@ class DroneViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         refreshDiagnostic()
-        viewModelScope.launch { autoConnect() }
+        // viewModelScope.launch { autoConnect() }
     }
 
     private suspend fun autoConnect() {
         Log.i(TAG, "autoConnect: début de la séquence")
         _autoStatus.value = "Ouverture USB AOA…"
-        aoaController.connectFirstAvailable()
-        val aoaResult = aoaController.state.first { it is AoaState.Open || it is AoaState.Error }
-        if (aoaResult is AoaState.Error) {
-            Log.w(TAG, "autoConnect: AOA échoué — ${aoaResult.message}")
-            _autoStatus.value = "Erreur AOA — brancher le SC2"
-            return
+        if (aoaController.state.value !is AoaState.Open) {
+            aoaController.connectFirstAvailable()
+            val aoaResult = aoaController.state.first { it is AoaState.Open || it is AoaState.Error }
+            if (aoaResult is AoaState.Error) {
+                Log.w(TAG, "autoConnect: AOA échoué — ${aoaResult.message}")
+                _autoStatus.value = "Erreur AOA — brancher le SC2"
+                return
+            }
         }
         Log.i(TAG, "autoConnect: AOA ouvert")
 
         _autoStatus.value = "Handshake MUX…"
-        aoaController.sendHandshake(isAck = false)
-        aoaController.ctrlHistory.first { it.isNotEmpty() }
+        if (aoaController.ctrlHistory.value.isEmpty()) {
+            aoaController.sendHandshake(isAck = false)
+            aoaController.ctrlHistory.first { it.isNotEmpty() }
+        }
         Log.i(TAG, "autoConnect: handshake OK — canaux MUX ouverts")
 
         _autoStatus.value = "Découverte des appareils…"
-        aoaController.sendDiscover()
+        if (aoaController.devices.value.isEmpty()) {
+            aoaController.sendDiscover()
+        }
         val devices = aoaController.devices.first { it.isNotEmpty() }
         Log.i(TAG, "autoConnect: ${devices.size} device(s) trouvé(s) — ${devices.first().name}")
 
         val dev = devices.first()
         _autoStatus.value = "Connexion à ${dev.name}…"
-        aoaController.sendConnect(dev.id)
+        if (aoaController.connResp.value?.status != 0) {
+            aoaController.sendConnect(dev.id)
+        }
         val resp = aoaController.connResp.first { it != null && it.status == 0 }
         Log.i(TAG, "autoConnect: CONN_RESP ok — ${resp!!.json.take(80)}")
 
@@ -222,6 +239,22 @@ class DroneViewModel(app: Application) : AndroidViewModel(app) {
     val videoRecordState: StateFlow<Int?> = aoaController.videoRecordState
     val videoEnableState: StateFlow<Int?> = aoaController.videoEnableState
     val videoStreamMode: StateFlow<Int?> = aoaController.videoStreamMode
+
+    val sc2WifiList: StateFlow<List<AoaController.Sc2WifiEntry>> = aoaController.sc2WifiList
+    val sc2WifiConnected: StateFlow<String?> = aoaController.sc2WifiConnected
+    val sc2DroneConnectionState: StateFlow<Int?> = aoaController.sc2DroneConnectionState
+    val dmConnectionState: StateFlow<AoaController.DmConnectionState?> = aoaController.dmConnectionState
+    val dmDroneList: StateFlow<List<AoaController.DmDroneItem>> = aoaController.dmDroneList
+
+    fun aoaSc2WifiScan() { viewModelScope.launch { aoaController.sendSc2WifiScan() } }
+    fun aoaSc2WifiConnect(bssid: String, ssid: String, passphrase: String = "") {
+        viewModelScope.launch { aoaController.sendSc2WifiConnect(bssid, ssid, passphrase) }
+    }
+    fun aoaSc2WifiRequestCurrent() { viewModelScope.launch { aoaController.sendSc2WifiRequestCurrent() } }
+    fun aoaDmDiscoverDrones() { viewModelScope.launch { aoaController.sendDmDiscoverDrones() } }
+    fun aoaDmConnect(serial: String, key: String = "") { viewModelScope.launch { aoaController.sendDmConnect(serial, key) } }
+
+    fun aoaAutoConnect() { viewModelScope.launch { autoConnect() } }
 
     fun aoaToggleRecord() {
         viewModelScope.launch {

@@ -1,5 +1,43 @@
 # Release Notes
 
+## 2026-05-26 (session 9)
+
+### Connexion directe Wi-Fi Pixel → Bebop 2 (sans SC2)
+- `network/DirectController.kt` (nouveau) : connexion TCP discovery (port 44444) + transport UDP ARCommands directement entre le Pixel et le drone via Wi-Fi
+- Gestion réseau Android : `ConnectivityManager.requestNetwork()` pour trouver le Wi-Fi, `Network.bindSocket()` pour forcer le socket UDP sur le bon réseau (Android route par défaut sur les données mobiles quand le Wi-Fi n'a pas d'internet)
+- Retry automatique (6 tentatives, 3s entre chaque) pour gérer le `ECONNREFUSED` quand la session précédente n'a pas expiré
+- Boucle PCMD à 25Hz (40ms) obligatoire pour maintenir la connexion vivante — sans PCMD le drone considère le client mort après ~200ms
+- Envoi `CurrentDate (0,0,1)` + `CurrentTime (0,0,2)` avant AllSettings/AllStates — requis par le protocole ARSDK pour l'initialisation complète
+- Boucle ping à 500ms + réponse pong aux pings du drone
+- Parsing batterie drone `(0,1,1)` et firmware `(0,5,0)` — batterie pas encore confirmée (à tester demain)
+- Card UI "Connexion directe Wi-Fi" sur l'écran debug avec statut, batterie, firmware, boutons Connecter/Déconnecter
+
+### Diagnostic SC2 — module Wi-Fi probablement HS
+- Le SC2 connaît le drone (serial PI040384AG7C087996, Bebop2-087996) mais reste en état "searching" — ne trouve pas le Wi-Fi du drone
+- Feature 137 (drone_manager) supportée par le SC2 : parsing `connection_state`, `drone_list_item`, commandes `discover_drones` et `connect`
+- Commandes Wi-Fi legacy `(4,1,0)` RequestWifiList et drone_manager discover envoyées mais **aucune réponse** du SC2
+- Ouverture physique du SC2 : carte MPP_MB_07, antennes patch intégrées au PCB (pas de câble U.FL), traces d'oxydation sur les 4 patchs antenne — suspect pour la défaillance Wi-Fi intermittente
+- Recherche internet : piste principale = connecteur/ampli Wi-Fi dégradé, nettoyage alcool isopropylique recommandé
+
+### FileLogger — logs persistants sur fichier
+- `FileLogger.kt` (nouveau) : écrit les logs dans `/sdcard/Android/data/io.dayd.bebop/files/bebop-log-*.txt` avec autoFlush
+- Remplace `android.util.Log` dans `AoaController` et `DroneViewModel` via `import io.dayd.bebop.FileLogger as Log`
+- Permet de récupérer les logs via `adb pull` même après débranchement/rebranchement USB
+
+### Nettoyage UI — DebugScreen simplifié
+- Card "Statut global" en haut avec message clair (vert/orange/rouge) + un seul bouton principal
+- Card "SC2 → Drone" avec drone_manager state, boutons Chercher drones / Scan Wi-Fi
+- Viré : champ IP + bouton "Connecter" (approche RNDIS abandonnée), UsbCard, DiagnosticCard réseau, boutons manuels Handshake/Discover/Probe
+- Section "Avancé" dépliable pour les boutons debug restants
+- Boutons pilotage grisés tant que le drone n'est pas connecté
+
+### Bugfix auto-connect
+- `autoConnect()` ne rappelle plus `connectFirstAvailable()` si l'AOA est déjà ouvert — évite un reset de ctrlHistory/devices qui causait un deadlock
+- Skip automatique de chaque étape déjà complétée (handshake, discover, connect)
+
+### Permissions Android
+- Ajout `CHANGE_NETWORK_STATE` et `ACCESS_WIFI_STATE` dans le manifest (requis pour `ConnectivityManager.requestNetwork`)
+
 ## 2026-05-25 (session 8)
 
 ### Auto-connect au démarrage
