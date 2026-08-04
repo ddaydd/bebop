@@ -56,6 +56,13 @@
 - Message « Sticks inactifs — ARMER pour piloter » affiché tant qu'ils sont inhibés : des sticks volontairement inertes passent sinon pour une panne
 - **`STOP` renommé `DÉSARMER`** (et gris au lieu de rouge) : il n'a jamais stoppé le drone, il recentre les sticks et remasque DÉCOLLER. En vol le drone reste en stationnaire — pour couper c'est ATTERRIR ou URGENCE. Le libellé doit rester juste sous stress.
 
+### Réglages de performance — le drone était bridé d'usine
+- Symptôme : rotation sur soi-même très lente en vol. Cause : `MaxRotationSpeed` à **13 °/s** pour un maximum de **200** (tour complet en 28 s), `MaxTilt` 8°/35, `MaxVerticalSpeed` 1,0/6,0 m/s. Réglages « débutant » d'usine — rien à voir avec le chemin PCMD.
+- Les `*SettingsState` portaient déjà l'info : **3 floats (courant, min, max)**. Parsing de `(1,12,0)`, `(1,12,1)` et `(1,6,1)` ; affichage « courant / max » avec alerte orange quand le drone tourne en dessous de sa capacité.
+- `applyPerformance(fraction)` interpole sur la plage annoncée au lieu de sauter au plafond : 200 °/s avec 35° d'inclinaison rend l'appareil difficile à tenir, ce qu'on ne met pas entre les mains de quelqu'un pour un premier vol. Deux préréglages : **Modéré** (mi-plage) et **Max**, avec la mise en garde affichée à côté du bouton.
+- Encodeurs `ArCommand.maxRotationSpeed/maxVerticalSpeed/maxTilt` (un float LE)
+- **Validé** : 13 → 105 °/s, 8 → 20°, 1,0 → 3,25 m/s, chaque valeur réémise par le drone en confirmation. Les settings sont persistés dans le drone.
+
 ### Pièges documentés
 - Le drone ne libère le port 44444 que sur déconnexion propre : un `force-stop` laisse la session ouverte (toujours fermée 10 min après). Cliquer « Déconnecter » avant de réinstaller l'APK.
 - `ping`/`nc` depuis `adb shell` partent par `rmnet1` (données mobiles) → faux négatifs. Forcer `ping -I wlan0`.
