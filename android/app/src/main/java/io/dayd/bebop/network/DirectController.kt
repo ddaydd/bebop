@@ -118,6 +118,36 @@ class DirectController(private val appContext: Context) {
         }
     }
 
+    // --- Retour au point de départ (RTH) -------------------------------------
+    // Le RTH dépend du GPS : sans fix au décollage, le drone n'a pas de position
+    // « maison » et la commande ne fera rien. On expose donc l'état réel plutôt
+    // que d'offrir un bouton qui échouerait en silence.
+
+    private val _gpsFix = MutableStateFlow(false)
+    val gpsFix: StateFlow<Boolean> = _gpsFix.asStateFlow()
+
+    /** Position maison enregistrée par le drone (lat, lon). */
+    private val _homeSet = MutableStateFlow(false)
+    val homeSet: StateFlow<Boolean> = _homeSet.asStateFlow()
+
+    /** NavigateHomeStateChanged : 0=available 1=inProgress 2=unavailable 3=pending. */
+    private val _navigateHomeState = MutableStateFlow<Int?>(null)
+    val navigateHomeState: StateFlow<Int?> = _navigateHomeState.asStateFlow()
+
+    /** Vrai quand un retour maison peut réellement être lancé. */
+    val homeAvailable: StateFlow<Boolean> = MutableStateFlow(false).also { flow ->
+        scope.launch {
+            kotlinx.coroutines.flow.combine(_gpsFix, _homeSet, _navigateHomeState) { fix, home, nav ->
+                // L'état 2 (unavailable) fait foi quand le drone l'annonce ;
+                // sinon on se rabat sur fix + maison connue.
+                if (nav == 2) false else (fix && home) || nav == 0 || nav == 1
+            }.collect { flow.value = it }
+        }
+    }
+
+    fun sendNavigateHome(start: Boolean) =
+        sendFlightCommand(ArCommand.navigateHome(start), "NavigateHome($start)")
+
     /** ardrone3 FlyingStateChanged : 0=landed 1=takingoff 2=hovering 3=flying 4=landing 5=emergency. */
     private val _flyingState = MutableStateFlow<Int?>(null)
     val flyingState: StateFlow<Int?> = _flyingState.asStateFlow()
@@ -131,6 +161,17 @@ class DirectController(private val appContext: Context) {
         4 -> "atterrissage"; 5 -> "urgence"; 6 -> "décollage utilisateur"
         7 -> "montée moteurs"; 8 -> "atterrissage d'urgence"
         else -> "état $s"
+    }
+
+    private fun navHomeLabel(s: Int): String = when (s) {
+        0 -> "disponible"; 1 -> "en cours"; 2 -> "indisponible"; 3 -> "en attente"
+        else -> "état $s"
+    }
+
+    private fun readU64Le(buf: ByteArray, off: Int): Long {
+        var v = 0L
+        for (i in 7 downTo 0) v = (v shl 8) or (buf[off + i].toLong() and 0xff)
+        return v
     }
 
     private fun readU32Le(buf: ByteArray, off: Int): Int =
@@ -417,6 +458,9 @@ class DirectController(private val appContext: Context) {
         _lastTuple.value = null
         _flyingState.value = null
         _videoRecordState.value = null
+        _gpsFix.value = false
+        _homeSet.value = false
+        _navigateHomeState.value = null
         _videoFrames.value = 0L
         _videoPath.value = null
         centerSticks()
@@ -611,6 +655,33 @@ class DirectController(private val appContext: Context) {
                 if (_flyingState.value != st) {
                     Log.i(TAG, "FlyingState: $st (${flyingStateLabel(st)})")
                     _flyingState.value = st
+                }
+            }
+            // (1,4,3) NavigateHomeStateChanged : state u32 + reason u32
+            if (prj == 1 && cls == 4 && cmd == 3 && args.size >= 4) {
+                val st = readU32Le(args, 0)
+                if (_navigateHomeState.value != st) {
+                    Log.i(TAG, "NavigateHomeState: $st (${navHomeLabel(st)})")
+                    _navigateHomeState.value = st
+                }
+            }
+            // (1,24,0) HomeChanged : 3 doubles (lat, lon, alt). Parrot signale
+            // « pas de position » par la valeur sentinelle 500.
+            if (prj == 1 && cls == 24 && cmd == 0 && args.size >= 16) {
+                val lat = java.lang.Double.longBitsToDouble(readU64Le(args, 0))
+                val lon = java.lang.Double.longBitsToDouble(readU64Le(args, 8))
+                val ok = lat != 500.0 && lon != 500.0
+                if (_homeSet.value != ok) {
+                    Log.i(TAG, "Home ${if (ok) "enregistrée ($lat, $lon)" else "absente"}")
+                    _homeSet.value = ok
+                }
+            }
+            // (1,24,2) GPSFixStateChanged : u8 fixed
+            if (prj == 1 && cls == 24 && cmd == 2 && args.isNotEmpty()) {
+                val fixed = args[0].toInt() != 0
+                if (_gpsFix.value != fixed) {
+                    Log.i(TAG, "GPS fix: $fixed")
+                    _gpsFix.value = fixed
                 }
             }
             // Réglages de perf annoncés par le drone (current, min, max).

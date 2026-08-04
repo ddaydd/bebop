@@ -41,6 +41,10 @@ fun PilotScreen(vm: DroneViewModel) {
     val directConnected by vm.directConnected.collectAsStateWithLifecycle()
     val flyingState by vm.directFlyingState.collectAsStateWithLifecycle()
     val sticksInhibited by vm.sticksInhibited.collectAsStateWithLifecycle()
+    val gpsFix by vm.directGpsFix.collectAsStateWithLifecycle()
+    val homeAvailable by vm.directHomeAvailable.collectAsStateWithLifecycle()
+    val navHomeState by vm.directNavigateHomeState.collectAsStateWithLifecycle()
+    val returning = navHomeState == 1
     val pilotingActive by vm.pilotingActive.collectAsStateWithLifecycle()
     val configured by vm.decoderConfigured.collectAsStateWithLifecycle()
     val aoaState by vm.aoaState.collectAsStateWithLifecycle()
@@ -135,8 +139,23 @@ fun PilotScreen(vm: DroneViewModel) {
                 if (recording) {
                     HudText("● REC", Color(0xFFFF1744))
                 }
+                if (returning) {
+                    HudText("RETOUR EN COURS", Color(0xFF82B1FF))
+                }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                // Le RTH dépend du GPS : il faut le savoir avant de décoller,
+                // pas au moment où on en a besoin.
+                if (connected) {
+                    HudText(
+                        when {
+                            homeAvailable -> "GPS ✓ retour OK"
+                            gpsFix -> "GPS ✓ sans maison"
+                            else -> "GPS — pas de retour"
+                        },
+                        if (homeAvailable) Color(0xFF69F0AE) else Color(0xFFFFD740),
+                    )
+                }
                 droneBatt?.let { HudText("Drone $it%") }
                 sc2Batt?.let { HudText("SC2 $it%") }
                 HudText("Swipe →")
@@ -226,7 +245,20 @@ fun PilotScreen(vm: DroneViewModel) {
                         if (recording) "STOP REC" else "REC",
                         if (recording) Color(0xFFFF5252) else Color(0xFF757575),
                     ) { vm.aoaToggleRecord() }
-                    PilotButton("URGENCE", Color(0xFFD50000)) { vm.aoaEmergency() }
+                    if (pilotingActive) {
+                        // RTH grisé sans position maison : un bouton qui échoue
+                        // en silence en vol serait pire que pas de bouton.
+                        PilotButton(
+                            if (returning) "ANNULER RETOUR" else "RETOUR",
+                            if (returning) Color(0xFF7B1FA2) else Color(0xFF3949AB),
+                            enabled = homeAvailable,
+                        ) { vm.navigateHome(!returning) }
+                    }
+                    // « COUPER MOTEURS » et pas « URGENCE » : ce bouton coupe les
+                    // moteurs et le drone tombe. Beaucoup d'apps grand public
+                    // déclenchent un retour maison sous un bouton rouge d'urgence
+                    // — ici c'est l'inverse, le libellé doit lever l'ambiguïté.
+                    PilotButton("COUPER MOTEURS", Color(0xFFD50000)) { vm.aoaEmergency() }
                 }
             }
         }
@@ -246,12 +278,21 @@ private fun HudText(text: String, color: Color = Color.White) {
 }
 
 @Composable
-private fun PilotButton(label: String, color: Color, onClick: () -> Unit) {
+private fun PilotButton(
+    label: String,
+    color: Color,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+) {
     Button(
         onClick = onClick,
-        colors = ButtonDefaults.buttonColors(containerColor = color.copy(alpha = 0.85f)),
+        enabled = enabled,
+        colors = ButtonDefaults.buttonColors(
+            containerColor = color.copy(alpha = 0.85f),
+            disabledContainerColor = Color.DarkGray.copy(alpha = 0.6f),
+        ),
         shape = RoundedCornerShape(8.dp),
     ) {
-        Text(label, color = Color.White, fontSize = 14.sp)
+        Text(label, color = if (enabled) Color.White else Color.LightGray, fontSize = 14.sp)
     }
 }

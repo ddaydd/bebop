@@ -136,8 +136,23 @@ object ArCommand {
     // ardrone3.Piloting.* (prj=1 cls=0)
     fun takeoff(): ByteArray = noArgs(1, 0, 1)
     fun landing(): ByteArray = noArgs(1, 0, 3)
+    /** Coupe les moteurs immédiatement — le drone tombe. Ce n'est PAS un retour maison. */
     fun emergency(): ByteArray = noArgs(1, 0, 4)
     fun flatTrim(): ByteArray = noArgs(1, 0, 0)
+
+    /**
+     * ardrone3.Piloting.NavigateHome (1,0,5) — retour au point de décollage.
+     * Nécessite un fix GPS au décollage pour que la position « maison » existe.
+     * arg start u8 : 1 = lancer le retour, 0 = l'annuler.
+     */
+    fun navigateHome(start: Boolean): ByteArray {
+        val buf = ByteBuffer.allocate(5).order(ByteOrder.LITTLE_ENDIAN)
+        buf.put(1.toByte())
+        buf.put(0.toByte())
+        buf.putShort(5.toShort())
+        buf.put(if (start) 1 else 0)
+        return buf.array()
+    }
 
     /**
      * ardrone3.Piloting.PCMD (prj=1 cls=0 cmd=2) — args :

@@ -58,6 +58,15 @@ class DroneViewModel(app: Application) : AndroidViewModel(app) {
     val directMaxRotationSpeed = directController.maxRotationSpeed
     val directMaxVerticalSpeed = directController.maxVerticalSpeed
     val directMaxTilt = directController.maxTilt
+    val directGpsFix: StateFlow<Boolean> = directController.gpsFix
+    val directHomeAvailable: StateFlow<Boolean> = directController.homeAvailable
+    val directNavigateHomeState: StateFlow<Int?> = directController.navigateHomeState
+
+    /** Lance ou annule le retour au point de décollage (Wi-Fi direct uniquement). */
+    fun navigateHome(start: Boolean) {
+        if (useDirect()) directController.sendNavigateHome(start)
+    }
+
     fun directPerfModerate() = directController.applyPerformance(0.5f)
     fun directPerfMax() = directController.applyPerformance(1f)
     fun directStartVideo() { directController.startVideo() }
