@@ -70,6 +70,25 @@
 - Le HUD indique si le retour est disponible **avant** le décollage (`GPS ✓ retour OK` / `GPS — pas de retour`), et le bouton est désactivé sinon : un bouton qui échoue en silence en plein vol est pire que pas de bouton
 - **Validé au sol** : position maison d'un vol précédent toujours en mémoire, `NavigateHomeState: 2 (indisponible)` en intérieur, bouton correctement grisé
 
+### Post-mortem du premier vol (2026-08-04, ~16:04) — batterie HS
+Séquence relevée dans `bebop-log-20260804-155848.txt` :
+```
+16:04:13.9  vol normal
+16:04:14.48 batterie 31%
+16:04:15.01 batterie 25%    ← 11 points en 770 ms
+16:04:15.06 (1,4,2) AlertStateChanged
+16:04:15.10 FlyingState: 5 (urgence)   ← le drone coupe seul
+16:04:18.1  posé
+```
+- **Cause : effondrement de tension**, pas une décharge. Résistance interne trop élevée → sous charge moteurs la tension s'écroule, le drone déclenche son cut-out. La batterie est à remplacer. Le « drone parti d'un coup à droite » est le décrochage asymétrique des moteurs juste avant la coupure — pas une commande partie de travers.
+- Indice rétrospectif : 90 % → 54 % en 45 min **au sol**, puis 54 % → 31 % en quelques minutes de vol.
+
+### Deux défauts révélés par l'incident
+- **Alertes drone ignorées** : `(1,4,2)` AlertStateChanged était reçu et logué comme un tuple anonyme. Désormais parsé (0=none 1=user 2=cut_out 3=critical_battery 4=low_battery 5=too_much_angle) et affiché en bandeau rouge en haut de l'écran de pilotage.
+- **Perte de liaison invisible** : après la coupure, la boucle PCMD a continué d'émettre à 25 Hz dans un réseau mort pendant que l'écran gardait sa dernière image et affichait toujours `Live` — indiscernable d'une app figée, et c'est exactement comme ça que ça a été vécu. Watchdog : 2 s sans paquet → statut `Sans réponse` + bandeau `LIAISON PERDUE`.
+- Log des échecs d'envoi limité à une ligne / 2 s : à 25 Hz ils avaient rempli le fichier de milliers de lignes identiques, noyant la fenêtre utile à l'analyse.
+- ⚠️ **Non vérifié sur matériel** : aucune alerte n'a été levée au banc et le drone est éteint — ni le bandeau d'alerte ni le watchdog n'ont donc été déclenchés pour de vrai.
+
 ### Pièges documentés
 - Le drone ne libère le port 44444 que sur déconnexion propre : un `force-stop` laisse la session ouverte (toujours fermée 10 min après). Cliquer « Déconnecter » avant de réinstaller l'APK.
 - `ping`/`nc` depuis `adb shell` partent par `rmnet1` (données mobiles) → faux négatifs. Forcer `ping -I wlan0`.
