@@ -25,6 +25,7 @@ import io.dayd.bebop.network.NetworkInspector
 import io.dayd.bebop.network.UsbInspector
 import io.dayd.bebop.network.UsbReport
 import io.dayd.bebop.network.getGatewaysFromContext
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -120,12 +121,55 @@ class DroneViewModel(app: Application) : AndroidViewModel(app) {
     private val _usb = MutableStateFlow(UsbReport(emptyList(), emptyList()))
     val usb: StateFlow<UsbReport> = _usb.asStateFlow()
 
-    private val _autoStatus = MutableStateFlow("Recherche du SC2…")
+    private val _autoStatus = MutableStateFlow("Démarrage…")
     val autoStatus: StateFlow<String> = _autoStatus.asStateFlow()
+
+    private var autoConnectJob: Job? = null
 
     init {
         refreshDiagnostic()
-        // viewModelScope.launch { autoConnect() }
+        retryAutoConnect()
+    }
+
+    /**
+     * Choisit la voie puis se connecte. Le SC2 branché en USB prime : c'est un
+     * choix matériel explicite. Sinon on tente le Wi-Fi direct, qui est le mode
+     * nominal tant que le module Wi-Fi du SC2 est HS.
+     */
+    fun retryAutoConnect() {
+        if (autoConnectJob?.isActive == true) return
+        autoConnectJob = viewModelScope.launch {
+            val hasSc2 = runCatching { UsbInspector.snapshot(getApplication()) }
+                .getOrNull()?.accessories?.isNotEmpty() == true
+            if (hasSc2) {
+                Log.i(TAG, "autoConnect: SC2 détecté en USB — voie AOA")
+                runCatching { autoConnect() }.onFailure {
+                    Log.w(TAG, "autoConnect AOA échoué: ${it.message}")
+                    _autoStatus.value = "Erreur SC2 : ${it.message}"
+                }
+            } else {
+                Log.i(TAG, "autoConnect: pas de SC2 — voie Wi-Fi directe")
+                autoConnectDirect()
+            }
+        }
+    }
+
+    private suspend fun autoConnectDirect() {
+        // Reporte la progression de DirectController dans l'overlay du pilotage,
+        // sinon l'écran resterait sur un message figé pendant les 6 tentatives.
+        val mirror = viewModelScope.launch {
+            directController.droneStatus.collect { _autoStatus.value = it }
+        }
+        try {
+            directController.connect()
+        } finally {
+            mirror.cancel()
+        }
+        _autoStatus.value = if (directController.connected.value) {
+            directController.droneStatus.value
+        } else {
+            "Drone introuvable — connecter le Pixel au Wi-Fi Bebop2-…"
+        }
     }
 
     private suspend fun autoConnect() {
@@ -284,7 +328,7 @@ class DroneViewModel(app: Application) : AndroidViewModel(app) {
     fun aoaDmDiscoverDrones() { viewModelScope.launch { aoaController.sendDmDiscoverDrones() } }
     fun aoaDmConnect(serial: String, key: String = "") { viewModelScope.launch { aoaController.sendDmConnect(serial, key) } }
 
-    fun aoaAutoConnect() { viewModelScope.launch { autoConnect() } }
+    fun aoaAutoConnect() = retryAutoConnect()
 
     fun aoaToggleRecord() {
         if (useDirect()) {

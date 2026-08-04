@@ -44,6 +44,13 @@
 - Card Pilotage debug : `canPilot` prend en compte la voie directe (boutons plus grisés)
 - **Testé au sol uniquement** : `FlatTrim` routé et acquitté par le drone, `FlyingState: 0 (posé)`, armement OK. **Décollage volontairement non déclenché** — reste à valider en vol.
 
+### Auto-connexion au démarrage
+- `autoConnect()` était commenté depuis la session 9 : l'app affichait un `Recherche du SC2…` **figé** qui ne correspondait à aucune action, et il fallait aller sur la page debug pour taper « Connecter »
+- `retryAutoConnect()` choisit la voie : SC2 branché en USB → AOA (choix matériel explicite de l'utilisateur), sinon Wi-Fi direct (mode nominal tant que le Wi-Fi du SC2 est HS)
+- La progression de `DirectController` est recopiée dans `autoStatus`, sinon l'overlay resterait figé pendant les 6 tentatives de discovery
+- Overlay pilotage : le spinner s'arrête sur échec et un bouton **RÉESSAYER** apparaît — plus besoin de passer par la page debug
+- **Validé** : lancement à froid → vidéo live à l'écran en 0,9 s, sans aucune interaction (`pas de SC2 — voie Wi-Fi directe` → discovery → batterie 75 % → RTP)
+
 ### Pièges documentés
 - Le drone ne libère le port 44444 que sur déconnexion propre : un `force-stop` laisse la session ouverte (toujours fermée 10 min après). Cliquer « Déconnecter » avant de réinstaller l'APK.
 - `ping`/`nc` depuis `adb shell` partent par `rmnet1` (données mobiles) → faux négatifs. Forcer `ping -I wlan0`.

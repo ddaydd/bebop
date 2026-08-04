@@ -144,20 +144,28 @@ fun PilotScreen(vm: DroneViewModel) {
 
         // Connection status overlay
         if (!connected) {
-            val isError = aoaState is io.dayd.bebop.aoa.AoaState.Error
+            // Une tentative terminée sans succès laisse un statut d'échec : on
+            // arrête le spinner et on propose de relancer sans passer par debug.
+            val failed = aoaState is io.dayd.bebop.aoa.AoaState.Error ||
+                autoStatus.startsWith("Drone introuvable") ||
+                autoStatus.startsWith("Erreur") ||
+                autoStatus.startsWith("Aucun Wi-Fi")
             Column(
                 modifier = Modifier.align(Alignment.Center),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
-                if (!isError) {
+                if (!failed) {
                     CircularProgressIndicator(color = Color.White)
                 }
                 Text(
                     autoStatus,
-                    color = if (isError) Color(0xFFFF5252) else Color.White,
+                    color = if (failed) Color(0xFFFF5252) else Color.White,
                     fontSize = 16.sp,
                 )
+                if (failed) {
+                    PilotButton("RÉESSAYER", Color(0xFF2196F3)) { vm.retryAutoConnect() }
+                }
             }
         }
 
