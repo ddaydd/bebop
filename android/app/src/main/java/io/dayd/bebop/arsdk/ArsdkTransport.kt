@@ -110,6 +110,29 @@ object ArCommand {
         return buf.array()
     }
 
+    /** Encode une ARCommand à un seul arg float (IEEE 754 LE). */
+    private fun oneFloat(prj: Int, cls: Int, cmd: Int, value: Float): ByteArray {
+        val buf = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN)
+        buf.put(prj.toByte())
+        buf.put(cls.toByte())
+        buf.putShort(cmd.toShort())
+        buf.putFloat(value)
+        return buf.array()
+    }
+
+    // Réglages de performance. Les valeurs par défaut du Bebop 2 sont
+    // volontairement basses ; le drone annonce lui-même ses bornes via les
+    // *SettingsState (3 floats : courant, min, max).
+
+    /** ardrone3.SpeedSettings.MaxRotationSpeed — °/s (vitesse de yaw). */
+    fun maxRotationSpeed(degPerSec: Float): ByteArray = oneFloat(1, 11, 1, degPerSec)
+
+    /** ardrone3.SpeedSettings.MaxVerticalSpeed — m/s. */
+    fun maxVerticalSpeed(mPerSec: Float): ByteArray = oneFloat(1, 11, 0, mPerSec)
+
+    /** ardrone3.PilotingSettings.MaxTilt — degrés (inclinaison max = vitesse horizontale). */
+    fun maxTilt(deg: Float): ByteArray = oneFloat(1, 2, 1, deg)
+
     // ardrone3.Piloting.* (prj=1 cls=0)
     fun takeoff(): ByteArray = noArgs(1, 0, 1)
     fun landing(): ByteArray = noArgs(1, 0, 3)

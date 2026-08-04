@@ -55,6 +55,11 @@ class DroneViewModel(app: Application) : AndroidViewModel(app) {
     val directVideoFrames: StateFlow<Long> = directController.videoFrames
     val directRtpStats: StateFlow<Triple<Long, Long, Long>> = directController.rtpStats
     val directVideoPath: StateFlow<String?> = directController.videoPath
+    val directMaxRotationSpeed = directController.maxRotationSpeed
+    val directMaxVerticalSpeed = directController.maxVerticalSpeed
+    val directMaxTilt = directController.maxTilt
+    fun directPerfModerate() = directController.applyPerformance(0.5f)
+    fun directPerfMax() = directController.applyPerformance(1f)
     fun directStartVideo() { directController.startVideo() }
     fun directStopVideo() { directController.stopVideo() }
     val directLastPacketAt: StateFlow<Long> = directController.lastPacketAt

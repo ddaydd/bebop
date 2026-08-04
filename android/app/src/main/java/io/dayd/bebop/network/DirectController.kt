@@ -70,6 +70,54 @@ class DirectController(private val appContext: Context) {
     private val _lastTuple = MutableStateFlow<String?>(null)
     val lastTuple: StateFlow<String?> = _lastTuple.asStateFlow()
 
+    /**
+     * Réglage de performance annoncé par le drone : valeur courante et bornes.
+     * Les *SettingsState renvoient 3 floats (current, min, max).
+     */
+    data class Setting(val current: Float, val min: Float, val max: Float) {
+        /** Vrai si le drone tourne bien en dessous de ce qu'il sait faire. */
+        val throttled: Boolean get() = max > min && current < max * 0.95f
+    }
+
+    private val _maxRotationSpeed = MutableStateFlow<Setting?>(null)
+    val maxRotationSpeed: StateFlow<Setting?> = _maxRotationSpeed.asStateFlow()
+
+    private val _maxVerticalSpeed = MutableStateFlow<Setting?>(null)
+    val maxVerticalSpeed: StateFlow<Setting?> = _maxVerticalSpeed.asStateFlow()
+
+    private val _maxTilt = MutableStateFlow<Setting?>(null)
+    val maxTilt: StateFlow<Setting?> = _maxTilt.asStateFlow()
+
+    private fun readFloatLe(buf: ByteArray, off: Int): Float =
+        java.lang.Float.intBitsToFloat(readU32Le(buf, off))
+
+    private fun readSetting(args: ByteArray): Setting? =
+        if (args.size < 12) null
+        else Setting(readFloatLe(args, 0), readFloatLe(args, 4), readFloatLe(args, 8))
+
+    /**
+     * Règle les performances à une fraction de la plage annoncée par le drone
+     * (0 = minimum, 1 = maximum). Interpoler plutôt que de sauter au max :
+     * d'usine ce Bebop tourne à 13 °/s pour un maximum de 200, et passer
+     * directement à 200 rend l'appareil difficile à tenir.
+     */
+    fun applyPerformance(fraction: Float) {
+        val f = fraction.coerceIn(0f, 1f)
+        fun target(s: Setting) = s.min + (s.max - s.min) * f
+        _maxRotationSpeed.value?.let {
+            val v = target(it)
+            sendFlightCommand(ArCommand.maxRotationSpeed(v), "MaxRotationSpeed($v °/s)")
+        }
+        _maxVerticalSpeed.value?.let {
+            val v = target(it)
+            sendFlightCommand(ArCommand.maxVerticalSpeed(v), "MaxVerticalSpeed($v m/s)")
+        }
+        _maxTilt.value?.let {
+            val v = target(it)
+            sendFlightCommand(ArCommand.maxTilt(v), "MaxTilt($v °)")
+        }
+    }
+
     /** ardrone3 FlyingStateChanged : 0=landed 1=takingoff 2=hovering 3=flying 4=landing 5=emergency. */
     private val _flyingState = MutableStateFlow<Int?>(null)
     val flyingState: StateFlow<Int?> = _flyingState.asStateFlow()
@@ -564,6 +612,20 @@ class DirectController(private val appContext: Context) {
                     Log.i(TAG, "FlyingState: $st (${flyingStateLabel(st)})")
                     _flyingState.value = st
                 }
+            }
+            // Réglages de perf annoncés par le drone (current, min, max).
+            // (1,12,x) = SpeedSettingsState, (1,6,1) = PilotingSettingsState.MaxTilt
+            if (prj == 1 && cls == 12 && cmd == 0) readSetting(args)?.let {
+                _maxVerticalSpeed.value = it
+                Log.i(TAG, "MaxVerticalSpeed: ${it.current} m/s (min ${it.min}, max ${it.max})")
+            }
+            if (prj == 1 && cls == 12 && cmd == 1) readSetting(args)?.let {
+                _maxRotationSpeed.value = it
+                Log.i(TAG, "MaxRotationSpeed: ${it.current} °/s (min ${it.min}, max ${it.max})")
+            }
+            if (prj == 1 && cls == 6 && cmd == 1) readSetting(args)?.let {
+                _maxTilt.value = it
+                Log.i(TAG, "MaxTilt: ${it.current}° (min ${it.min}, max ${it.max})")
             }
             if (Triple(prj, cls, cmd) == ArsdkIds.ARDRONE3_VIDEO_RECORD_STATE && args.size >= 4) {
                 _videoRecordState.value = readU32Le(args, 0)

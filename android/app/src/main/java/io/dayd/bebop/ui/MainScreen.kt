@@ -264,16 +264,66 @@ private fun DirectCard(vm: DroneViewModel) {
                 )
             }
 
+            if (connected) {
+                val rot by vm.directMaxRotationSpeed.collectAsStateWithLifecycle()
+                val vert by vm.directMaxVerticalSpeed.collectAsStateWithLifecycle()
+                val tilt by vm.directMaxTilt.collectAsStateWithLifecycle()
+                val anyThrottled = listOfNotNull(rot, vert, tilt).any { it.throttled }
+
+                HorizontalDivider()
+                Text("Performances", style = MaterialTheme.typography.titleSmall)
+                SettingLine("Rotation (yaw)", rot, "°/s")
+                SettingLine("Vitesse verticale", vert, "m/s")
+                SettingLine("Inclinaison max", tilt, "°")
+                if (anyThrottled) {
+                    Text(
+                        "Le drone est en dessous de ce qu'il sait faire",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color(0xFFEF6C00),
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = vm::directPerfModerate) { Text("Modéré") }
+                    OutlinedButton(onClick = vm::directPerfMax) { Text("Max") }
+                }
+                Text(
+                    "« Max » = 200 °/s et 35° d'inclinaison : très nerveux, à éviter tant que le drone n'est pas en main",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.outline,
+                )
+            }
+
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (!connected) {
                     Button(onClick = vm::directConnect) { Text("Connecter") }
                 } else {
                     OutlinedButton(onClick = vm::directDisconnect) { Text("Déconnecter") }
-                    Button(onClick = vm::directAllStates) { Text("Redemander états") }
                 }
+            }
+            if (connected) {
+                OutlinedButton(onClick = vm::directAllStates) { Text("Redemander états") }
             }
         }
     }
+}
+
+/** Affiche « courant / max » et signale en orange un réglage bridé. */
+@Composable
+private fun SettingLine(
+    label: String,
+    setting: io.dayd.bebop.network.DirectController.Setting?,
+    unit: String,
+) {
+    if (setting == null) {
+        Text("$label : —", style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.outline)
+        return
+    }
+    Text(
+        "$label : ${"%.1f".format(setting.current)} / ${"%.1f".format(setting.max)} $unit",
+        style = MaterialTheme.typography.bodySmall,
+        color = if (setting.throttled) Color(0xFFEF6C00) else Color(0xFF1B5E20),
+    )
 }
 
 @Composable
