@@ -33,6 +33,17 @@
 - Card debug : « Vidéo : N frames via rtp|arstream-v1 (RTP in=… drop=… NAL=…) » — dit quelle voie le firmware a retenue
 - **Validé terrain** : 1er paquet RTP 962 B, 300 frames en 10 s, `SPS/PPS trouvé (27B / 9B)`, `décodeur output: 864x480`, image live à l'écran
 
+### Commandes de vol en Wi-Fi direct
+- Les boutons de `PilotScreen` appelaient tous `aoaController` : en direct, l'écran affichait la vidéo mais ne commandait rien
+- `DirectController` : `sendTakeoff/Landing/Emergency/FlatTrim/VideoRecord`, `setPilotingInput()`, `centerSticks()`
+- La boucle PCMD envoyait des zéros codés en dur — elle lit maintenant les inputs réels, `flag=1` dès que roll ou pitch est non nul. Elle tourne en permanence à 25 Hz : c'est elle qui maintient la liaison.
+- `Emergency` part sur HIGHPRIO (shortcut la queue WITHACK potentiellement saturée) et **centre les sticks d'abord**, pour qu'aucun PCMD résiduel ne suive. `Landing` les centre aussi.
+- `DroneViewModel` route chaque commande vers la voie active, le direct prioritaire — envoyer sur les deux enverrait tout en double
+- En direct, la boucle PCMD tournant déjà, « ARMER » ne démarre rien : il ne conditionne qu'un flag d'armement explicite, sans lequel DÉCOLLER et URGENCE seraient exposés en permanence à un tap près
+- `FlyingStateChanged (1,4,1)` parsé et affiché dans le HUD (posé / décollage / stationnaire / en vol / urgence) — l'info la plus importante en pilotage. `VideoStateChangedV2` pour l'indicateur REC.
+- Card Pilotage debug : `canPilot` prend en compte la voie directe (boutons plus grisés)
+- **Testé au sol uniquement** : `FlatTrim` routé et acquitté par le drone, `FlyingState: 0 (posé)`, armement OK. **Décollage volontairement non déclenché** — reste à valider en vol.
+
 ### Pièges documentés
 - Le drone ne libère le port 44444 que sur déconnexion propre : un `force-stop` laisse la session ouverte (toujours fermée 10 min après). Cliquer « Déconnecter » avant de réinstaller l'APK.
 - `ping`/`nc` depuis `adb shell` partent par `rmnet1` (données mobiles) → faux négatifs. Forcer `ping -I wlan0`.
