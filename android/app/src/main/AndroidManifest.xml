@@ -13,10 +13,19 @@
         android:theme="@style/Theme.Bebop"
         android:usesCleartextTraffic="true">
 
+        <!--
+            Paysage forcé : pilotage à deux pouces sur une vidéo 16:9.
+            sensorLandscape (et pas landscape) pour que le téléphone puisse être
+            retourné dans l'autre sens selon le côté où sort le câble.
+            configChanges évite que la rotation recrée l'activité, ce qui
+            couperait la liaison au drone en plein vol.
+        -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
             android:label="Bebop"
+            android:screenOrientation="sensorLandscape"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
             android:theme="@style/Theme.Bebop">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
