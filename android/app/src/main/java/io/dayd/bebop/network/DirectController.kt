@@ -148,6 +148,41 @@ class DirectController(private val appContext: Context) {
     fun sendNavigateHome(start: Boolean) =
         sendFlightCommand(ArCommand.navigateHome(start), "NavigateHome($start)")
 
+    // --- Alertes et surveillance de la liaison -------------------------------
+
+    /**
+     * ardrone3.PilotingState.AlertStateChanged : 0=none 1=user 2=cut_out
+     * 3=critical_battery 4=low_battery 5=too_much_angle.
+     * Le drone a envoyé cette alerte juste avant de couper les moteurs lors du
+     * vol du 2026-08-04 ; elle était reçue mais ignorée.
+     */
+    private val _alertState = MutableStateFlow(0)
+    val alertState: StateFlow<Int> = _alertState.asStateFlow()
+
+    /** Vrai quand plus aucun paquet n'arrive du drone depuis LINK_TIMEOUT_MS. */
+    private val _linkLost = MutableStateFlow(false)
+    val linkLost: StateFlow<Boolean> = _linkLost.asStateFlow()
+
+    private var watchdogJob: Job? = null
+
+    /**
+     * Sans ça, une liaison morte est invisible : la boucle PCMD continue
+     * d'émettre dans le vide et l'écran garde sa dernière image, ce qui se lit
+     * comme une application figée.
+     */
+    private suspend fun linkWatchdog() {
+        while (kotlinx.coroutines.currentCoroutineContext()[Job]?.isActive == true) {
+            val last = _lastPacketAt.value
+            val lost = _connected.value && last > 0 &&
+                android.os.SystemClock.uptimeMillis() - last > LINK_TIMEOUT_MS
+            if (lost != _linkLost.value) {
+                _linkLost.value = lost
+                Log.w(TAG, if (lost) "LIAISON PERDUE — plus rien reçu du drone" else "liaison rétablie")
+            }
+            kotlinx.coroutines.delay(500)
+        }
+    }
+
     /** ardrone3 FlyingStateChanged : 0=landed 1=takingoff 2=hovering 3=flying 4=landing 5=emergency. */
     private val _flyingState = MutableStateFlow<Int?>(null)
     val flyingState: StateFlow<Int?> = _flyingState.asStateFlow()
@@ -161,6 +196,12 @@ class DirectController(private val appContext: Context) {
         4 -> "atterrissage"; 5 -> "urgence"; 6 -> "décollage utilisateur"
         7 -> "montée moteurs"; 8 -> "atterrissage d'urgence"
         else -> "état $s"
+    }
+
+    private fun alertLabel(a: Int): String = when (a) {
+        0 -> "aucune"; 1 -> "arrêt utilisateur"; 2 -> "COUPURE MOTEURS"
+        3 -> "BATTERIE CRITIQUE"; 4 -> "batterie faible"; 5 -> "ANGLE EXCESSIF"
+        else -> "alerte $a"
     }
 
     private fun navHomeLabel(s: Int): String = when (s) {
@@ -351,6 +392,7 @@ class DirectController(private val appContext: Context) {
             readerJob = scope.launch { readLoop(sock) }
             pingJob = scope.launch { pingLoop() }
             pcmdJob = scope.launch { pcmdLoop() }
+            watchdogJob = scope.launch { linkWatchdog() }
 
             // Socket RTP : ouvert avant VideoEnable pour ne pas rater les
             // premiers paquets (dont les SPS/PPS, sans lesquels le décodeur
@@ -435,6 +477,8 @@ class DirectController(private val appContext: Context) {
     }
 
     fun disconnect() {
+        watchdogJob?.cancel()
+        watchdogJob = null
         videoJob?.cancel()
         videoJob = null
         videoSocket?.close()
@@ -461,11 +505,15 @@ class DirectController(private val appContext: Context) {
         _gpsFix.value = false
         _homeSet.value = false
         _navigateHomeState.value = null
+        _alertState.value = 0
+        _linkLost.value = false
         _videoFrames.value = 0L
         _videoPath.value = null
         centerSticks()
         seqByBuffer.clear()
     }
+
+    private var lastSendErrorAt = 0L
 
     private fun sendDirect(data: ByteArray) {
         val sock = socket ?: return
@@ -473,7 +521,14 @@ class DirectController(private val appContext: Context) {
         try {
             sock.send(DatagramPacket(data, data.size, addr, c2dPort))
         } catch (e: Exception) {
-            Log.w(TAG, "Envoi UDP échoué: ${e.message}")
+            // La boucle PCMD tourne à 25 Hz : sans throttle, une liaison morte
+            // écrit des milliers de lignes identiques et noie le log au moment
+            // précis où on en a besoin pour comprendre ce qui s'est passé.
+            val now = android.os.SystemClock.uptimeMillis()
+            if (now - lastSendErrorAt > 2000) {
+                lastSendErrorAt = now
+                Log.w(TAG, "Envoi UDP échoué: ${e.message}")
+            }
         }
     }
 
@@ -657,6 +712,14 @@ class DirectController(private val appContext: Context) {
                     _flyingState.value = st
                 }
             }
+            // (1,4,2) AlertStateChanged — batterie critique, cut-out, angle excessif
+            if (prj == 1 && cls == 4 && cmd == 2 && args.size >= 4) {
+                val a = readU32Le(args, 0)
+                if (_alertState.value != a) {
+                    Log.w(TAG, "ALERTE DRONE: $a (${alertLabel(a)})")
+                    _alertState.value = a
+                }
+            }
             // (1,4,3) NavigateHomeStateChanged : state u32 + reason u32
             if (prj == 1 && cls == 4 && cmd == 3 && args.size >= 4) {
                 val st = readU32Le(args, 0)
@@ -727,5 +790,7 @@ class DirectController(private val appContext: Context) {
         /** ARStream v1 : buffers ARNetwork (cf. ARDISCOVERY_DEVICE_Usb.c). */
         private const val ARSTREAM_V1_DATA_BUFFER = 125
         private const val ARSTREAM_V1_ACK_BUFFER = 13
+        /** Le drone émet en continu (états, PONG) : 2 s de silence = liaison morte. */
+        private const val LINK_TIMEOUT_MS = 2000L
     }
 }

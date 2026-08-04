@@ -58,6 +58,8 @@ class DroneViewModel(app: Application) : AndroidViewModel(app) {
     val directMaxRotationSpeed = directController.maxRotationSpeed
     val directMaxVerticalSpeed = directController.maxVerticalSpeed
     val directMaxTilt = directController.maxTilt
+    val directAlertState: StateFlow<Int> = directController.alertState
+    val directLinkLost: StateFlow<Boolean> = directController.linkLost
     val directGpsFix: StateFlow<Boolean> = directController.gpsFix
     val directHomeAvailable: StateFlow<Boolean> = directController.homeAvailable
     val directNavigateHomeState: StateFlow<Int?> = directController.navigateHomeState

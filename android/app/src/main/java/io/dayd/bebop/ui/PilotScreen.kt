@@ -41,6 +41,8 @@ fun PilotScreen(vm: DroneViewModel) {
     val directConnected by vm.directConnected.collectAsStateWithLifecycle()
     val flyingState by vm.directFlyingState.collectAsStateWithLifecycle()
     val sticksInhibited by vm.sticksInhibited.collectAsStateWithLifecycle()
+    val alertState by vm.directAlertState.collectAsStateWithLifecycle()
+    val linkLost by vm.directLinkLost.collectAsStateWithLifecycle()
     val gpsFix by vm.directGpsFix.collectAsStateWithLifecycle()
     val homeAvailable by vm.directHomeAvailable.collectAsStateWithLifecycle()
     val navHomeState by vm.directNavigateHomeState.collectAsStateWithLifecycle()
@@ -105,12 +107,13 @@ fun PilotScreen(vm: DroneViewModel) {
         ) {
             val statusText = when {
                 !connected -> "Déconnecté"
+                linkLost -> "Sans réponse"
                 videoFrames > 0 && configured -> "Live"
                 videoFrames > 0 -> "Décodage…"
                 else -> "Connecté"
             }
             val statusColor = when {
-                !connected -> Color(0xFFFF5252)
+                !connected || linkLost -> Color(0xFFFF5252)
                 videoFrames > 0 && configured -> Color(0xFF69F0AE)
                 else -> Color(0xFFFFD740)
             }
@@ -159,6 +162,34 @@ fun PilotScreen(vm: DroneViewModel) {
                 droneBatt?.let { HudText("Drone $it%") }
                 sc2Batt?.let { HudText("SC2 $it%") }
                 HudText("Swipe →")
+            }
+        }
+
+        // Bandeau d'alerte : la liaison perdue et les alertes du drone doivent
+        // être lisibles d'un coup d'œil, sans quitter la vidéo des yeux. C'est
+        // ce qui a manqué au vol du 2026-08-04 : le drone a annoncé sa coupure,
+        // l'app l'a reçue et n'a rien montré.
+        val alertText = when {
+            linkLost -> "LIAISON PERDUE"
+            alertState == 3 -> "BATTERIE CRITIQUE"
+            alertState == 2 -> "COUPURE MOTEURS"
+            alertState == 5 -> "ANGLE EXCESSIF"
+            alertState == 4 -> "BATTERIE FAIBLE"
+            alertState == 1 -> "ARRÊT UTILISATEUR"
+            else -> null
+        }
+        if (alertText != null && connected) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 44.dp)
+                    .background(
+                        if (alertState == 4) Color(0xFFEF6C00) else Color(0xFFD50000),
+                        RoundedCornerShape(6.dp),
+                    )
+                    .padding(horizontal = 20.dp, vertical = 8.dp),
+            ) {
+                Text(alertText, color = Color.White, fontSize = 22.sp)
             }
         }
 
