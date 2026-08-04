@@ -63,6 +63,13 @@
 - Encodeurs `ArCommand.maxRotationSpeed/maxVerticalSpeed/maxTilt` (un float LE)
 - **Validé** : 13 → 105 °/s, 8 → 20°, 1,0 → 3,25 m/s, chaque valeur réémise par le drone en confirmation. Les settings sont persistés dans le drone.
 
+### Retour au point de départ + libellé d'urgence corrigé
+- **`URGENCE` renommé `COUPER MOTEURS`** : la commande envoyée est `Piloting.Emergency` `(1,0,4)`, qui coupe les moteurs — le drone **tombe**. Beaucoup d'apps grand public mettent un retour maison derrière un bouton rouge d'urgence : le libellé invitait à l'hypothèse exactement inverse, au pire moment.
+- **Vrai RTH ajouté** : `ArCommand.navigateHome(start)` = `(1,0,5)` + u8. Bouton `RETOUR` distinct, qui sert aussi à annuler pendant un retour en cours, + `RETOUR EN COURS` dans le HUD.
+- Le RTH dépend du GPS (sans fix au décollage, pas de position maison et la commande ne fait rien) : l'état est donc **exposé, pas supposé** — `NavigateHomeStateChanged (1,4,3)`, `HomeChanged (1,24,0)` (sentinelle Parrot **500** = pas de position), `GPSFixStateChanged (1,24,2)`
+- Le HUD indique si le retour est disponible **avant** le décollage (`GPS ✓ retour OK` / `GPS — pas de retour`), et le bouton est désactivé sinon : un bouton qui échoue en silence en plein vol est pire que pas de bouton
+- **Validé au sol** : position maison d'un vol précédent toujours en mémoire, `NavigateHomeState: 2 (indisponible)` en intérieur, bouton correctement grisé
+
 ### Pièges documentés
 - Le drone ne libère le port 44444 que sur déconnexion propre : un `force-stop` laisse la session ouverte (toujours fermée 10 min après). Cliquer « Déconnecter » avant de réinstaller l'APK.
 - `ping`/`nc` depuis `adb shell` partent par `rmnet1` (données mobiles) → faux négatifs. Forcer `ping -I wlan0`.
