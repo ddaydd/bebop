@@ -56,6 +56,10 @@
 - Message « Sticks inactifs — ARMER pour piloter » affiché tant qu'ils sont inhibés : des sticks volontairement inertes passent sinon pour une panne
 - **`STOP` renommé `DÉSARMER`** (et gris au lieu de rouge) : il n'a jamais stoppé le drone, il recentre les sticks et remasque DÉCOLLER. En vol le drone reste en stationnaire — pour couper c'est ATTERRIR ou URGENCE. Le libellé doit rester juste sous stress.
 
+### Mode paysage forcé
+- `android:screenOrientation="sensorLandscape"` — pilotage à deux pouces sur une vidéo 16:9. `sensorLandscape` (et pas `landscape`) pour pouvoir retourner le téléphone selon le côté d'où sort le câble.
+- `configChanges="orientation|screenSize|screenLayout|keyboardHidden"` : sans ça une rotation recrée l'activité, ce qui **couperait la liaison au drone en plein vol**
+
 ### Réglages de performance — le drone était bridé d'usine
 - Symptôme : rotation sur soi-même très lente en vol. Cause : `MaxRotationSpeed` à **13 °/s** pour un maximum de **200** (tour complet en 28 s), `MaxTilt` 8°/35, `MaxVerticalSpeed` 1,0/6,0 m/s. Réglages « débutant » d'usine — rien à voir avec le chemin PCMD.
 - Les `*SettingsState` portaient déjà l'info : **3 floats (courant, min, max)**. Parsing de `(1,12,0)`, `(1,12,1)` et `(1,6,1)` ; affichage « courant / max » avec alerte orange quand le drone tourne en dessous de sa capacité.
