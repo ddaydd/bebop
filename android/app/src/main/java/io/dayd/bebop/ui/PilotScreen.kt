@@ -36,18 +36,20 @@ import kotlin.math.roundToInt
 
 @Composable
 fun PilotScreen(vm: DroneViewModel) {
-    val droneBatt by vm.droneBatteryPercent.collectAsStateWithLifecycle()
+    val droneBatt by vm.anyDroneBattery.collectAsStateWithLifecycle()
     val sc2Batt by vm.sc2BatteryPercent.collectAsStateWithLifecycle()
+    val directConnected by vm.directConnected.collectAsStateWithLifecycle()
     val pilotingActive by vm.pilotingActive.collectAsStateWithLifecycle()
     val configured by vm.decoderConfigured.collectAsStateWithLifecycle()
     val aoaState by vm.aoaState.collectAsStateWithLifecycle()
     val connResp by vm.aoaConnResp.collectAsStateWithLifecycle()
-    val videoFrames by vm.aoaVideoFrames.collectAsStateWithLifecycle()
+    val videoFrames by vm.anyVideoFrames.collectAsStateWithLifecycle()
 
     val autoStatus by vm.autoStatus.collectAsStateWithLifecycle()
     val recordState by vm.videoRecordState.collectAsStateWithLifecycle()
     val recording = recordState == 1
-    val connected = aoaState is io.dayd.bebop.aoa.AoaState.Open && connResp != null
+    // Deux voies possibles vers le drone : SC2/AOA ou Wi-Fi direct. L'une suffit.
+    val connected = (aoaState is io.dayd.bebop.aoa.AoaState.Open && connResp != null) || directConnected
 
     var leftX by remember { mutableFloatStateOf(0f) }
     var leftY by remember { mutableFloatStateOf(0f) }

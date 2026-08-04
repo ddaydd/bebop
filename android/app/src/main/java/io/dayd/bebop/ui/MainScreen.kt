@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -203,6 +204,18 @@ private fun DirectCard(vm: DroneViewModel) {
     val status by vm.directDroneStatus.collectAsStateWithLifecycle()
     val battery by vm.directDroneBattery.collectAsStateWithLifecycle()
     val firmware by vm.directDroneFirmware.collectAsStateWithLifecycle()
+    val packetsIn by vm.directPacketsIn.collectAsStateWithLifecycle()
+    val lastPacketAt by vm.directLastPacketAt.collectAsStateWithLifecycle()
+    val lastTuple by vm.directLastTuple.collectAsStateWithLifecycle()
+
+    // Tick 1 Hz pour recalculer l'âge du dernier paquet reçu.
+    var now by remember { mutableStateOf(android.os.SystemClock.uptimeMillis()) }
+    LaunchedEffect(connected) {
+        while (connected) {
+            now = android.os.SystemClock.uptimeMillis()
+            kotlinx.coroutines.delay(1000)
+        }
+    }
 
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -227,11 +240,36 @@ private fun DirectCard(vm: DroneViewModel) {
                 Text("Firmware : $firmware", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
             }
 
+            if (connected) {
+                // Le lien peut être vivant sans aucune ARCommand (PONG/ACK seuls) :
+                // sans ce compteur, silence radio et lien mort sont indiscernables.
+                val ageS = if (lastPacketAt > 0) (now - lastPacketAt) / 1000 else -1
+                val alive = ageS in 0..2
+                Text(
+                    "Paquets reçus : $packetsIn" + if (ageS >= 0) " — dernier il y a ${ageS}s" else "",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (alive) Color(0xFF1B5E20) else Color(0xFFB71C1C),
+                )
+                Text("Dernier tuple : ${lastTuple ?: "—"}",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
+
+                val vFrames by vm.directVideoFrames.collectAsStateWithLifecycle()
+                val vRtp by vm.directRtpStats.collectAsStateWithLifecycle()
+                val vPath by vm.directVideoPath.collectAsStateWithLifecycle()
+                Text(
+                    "Vidéo : $vFrames frames" + (vPath?.let { " via $it" } ?: " — aucune") +
+                        "  (RTP in=${vRtp.first} drop=${vRtp.second} NAL=${vRtp.third})",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (vFrames > 0) Color(0xFF1B5E20) else MaterialTheme.colorScheme.outline,
+                )
+            }
+
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (!connected) {
                     Button(onClick = vm::directConnect) { Text("Connecter") }
                 } else {
                     OutlinedButton(onClick = vm::directDisconnect) { Text("Déconnecter") }
+                    Button(onClick = vm::directAllStates) { Text("Redemander états") }
                 }
             }
         }

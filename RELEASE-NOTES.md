@@ -1,5 +1,43 @@
 # Release Notes
 
+## 2026-08-04 (session 10)
+
+### BATTERIE DRONE — enfin affichée (90 % → 87 % en direct)
+- **Cause racine : les tuples « corrigés » en session 8 étaient une régression.** Les classes de `common.xml` sont `0=Network, 1=NetworkEvent, 2=Settings, 3=SettingsState, 4=Common, 5=CommonState` — pas ce que la session 8 avait supposé.
+- Vérification empirique sur le wire : `(0,3,4)`+`(0,3,5)` (serial high/low, 10 B chacun = 9 chars + `\0`) reconstituent exactement `PI040384AG7C087996`, le serial du drone ; `(0,5,7)` = 2 B = `WifiSignalChanged` (i16). Donc cls 3 = SettingsState et cls 5 = CommonState, sans ambiguïté.
+- Conséquence du bug : `AllStates` était envoyé sur `(0,0,0)`, une commande qui n'existe pas. Le drone l'ignorait **en silence** — aucun state renvoyé, batterie jamais reçue. Symptôme trompeur : `AllSettings` répondait normalement, le lien restait vivant, seul `AllStates` ne produisait rien.
+- `arsdk/ArsdkTransport.kt` : `COMMON_BATTERY` → `(0,5,1)`, `COMMON_ALL_STATES` → `(0,4,0)`, `COMMON_PRODUCT_VERSION` → `(0,3,3)`, ajout `COMMON_CURRENT_DATE (0,4,1)` / `COMMON_CURRENT_TIME (0,4,2)`
+- `network/DirectController.kt` : tuples en dur (CurrentDate/Time envoyés sur `(0,0,1)`/`(0,0,2)`, également faux) remplacés par les constantes `ArsdkIds`
+- Corrige aussi le chemin SC2/AOA, qui partage les mêmes constantes
+- **Validé terrain** : `AllStatesChanged (0,5,0)` reçu, `Batterie drone : 90%` puis `89%`, `88%`, `87%` (décharge en temps réel), `Firmware drone : 4.7.1 / hw HW_03`
+
+### Batterie affichée sur l'écran pilotage, quelle que soit la voie
+- `DroneViewModel.anyDroneBattery` : `combine(direct, aoa)` — le Wi-Fi direct prime quand il est actif
+- `PilotScreen` lisait uniquement `droneBatteryPercent` (chemin SC2) : le HUD affichait « — » en connexion directe. Bascule sur `anyDroneBattery`.
+- `PilotScreen.connected` prend en compte les deux voies (`aoa && connResp` **ou** `directConnected`) — sinon l'overlay « Recherche du SC2… » masquait l'écran en direct
+
+### Observabilité de la connexion directe
+- `DirectController` expose `packetsIn`, `lastPacketAt`, `lastTuple` ; log périodique 2 s du total de paquets
+- Sans ça, un lien vivant qui n'échange que des PONG/ACK (filtrés avant le log des ARCommands) est **indiscernable** d'un lien mort — c'est ce qui avait fait conclure à tort à une coupure
+- Card debug : « Paquets reçus : N — dernier il y a Xs » (vert si < 3 s), dernier tuple reçu, bouton **Redemander états**
+- `DirectController.requestAllStates()` public, réutilisé par la séquence de connexion
+
+### VIDÉO EN WI-FI DIRECT — 864x480 à ~30 fps, drone au sol
+- La caméra streame dès que le drone est allumé : **aucun décollage nécessaire**. Le blocage était côté app — le pipeline vidéo n'existait que sur le chemin SC2/MUX.
+- `DirectController` : `CONN_REQ` déclare `arstream2_client_stream_port: 55004` + `arstream2_client_control_port: 55005`. Le drone accepte et répond `"arstream2_server_stream_port": 5004, "arstream2_server_control_port": 5005`, puis envoie du RTP depuis `192.168.42.1:5004`.
+- **C'est l'inverse de la contrainte SC2** : le CLAUDE.md interdit les clés `arstream2_*` via le SC2 parce que le RTP ne traverse pas le MUX. Sans intermédiaire, c'est au contraire la voie naturelle.
+- Socket UDP 55004 → `RtpDepayloader` (déjà validé session 7) → `H264Decoder`. Ouvert **avant** `VideoEnable` pour ne pas rater les SPS/PPS des premiers paquets.
+- `VideoStreamMode(0)` + `VideoEnable(1)` envoyés automatiquement à la connexion ; `startVideo()`/`stopVideo()` exposés
+- Fallback ARStream v1 implémenté (fragments buffer 125 du canal d2c → `ArStreamReader`, ACK sur buffer 13) au cas où un firmware ignorerait les ports arstream2 — non utilisé par le 4.7.1
+- `DroneViewModel` : sink `H264Decoder` partagé entre les deux voies, `anyVideoFrames` pour le HUD
+- Card debug : « Vidéo : N frames via rtp|arstream-v1 (RTP in=… drop=… NAL=…) » — dit quelle voie le firmware a retenue
+- **Validé terrain** : 1er paquet RTP 962 B, 300 frames en 10 s, `SPS/PPS trouvé (27B / 9B)`, `décodeur output: 864x480`, image live à l'écran
+
+### Pièges documentés
+- Le drone ne libère le port 44444 que sur déconnexion propre : un `force-stop` laisse la session ouverte (toujours fermée 10 min après). Cliquer « Déconnecter » avant de réinstaller l'APK.
+- `ping`/`nc` depuis `adb shell` partent par `rmnet1` (données mobiles) → faux négatifs. Forcer `ping -I wlan0`.
+- La batterie peut mettre ~1 min à arriver quand `AllStates` part en même temps que l'activation vidéo (réponse noyée ou perdue en UDP). Le bouton « Redemander états » force le push.
+
 ## 2026-05-26 (session 9)
 
 ### Connexion directe Wi-Fi Pixel → Bebop 2 (sans SC2)

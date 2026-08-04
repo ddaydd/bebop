@@ -226,8 +226,11 @@ object ArsdkIds {
     const val PRJ_SKYCTRL = 4
 
     // Common.CommonState.BatteryStateChanged (drone) — 1 arg u8 percent.
-    // cls=1 (CommonState), pas cls=5 (SettingsState).
-    val COMMON_BATTERY = Triple(0, 1, 1)
+    // Classes de common.xml : 0=Network, 1=NetworkEvent, 2=Settings,
+    // 3=SettingsState, 4=Common, 5=CommonState. Donc CommonState = cls 5.
+    // Confirmé sur le wire (session 10) : (0,3,4)+(0,3,5) reconstruisent le
+    // serial drone PI040384AG7C087996, et (0,5,7)=2B = WifiSignalChanged i16.
+    val COMMON_BATTERY = Triple(0, 5, 1)
 
     // SkyController.SkyControllerState.BatteryChanged (SC2) — 1 arg u8 percent.
     val SKYCTRL_BATTERY = Triple(4, 8, 0)
@@ -236,14 +239,19 @@ object ArsdkIds {
     val SKYCTRL_ATTITUDE = Triple(4, 8, 4)
 
     // Requête : Common.Common.AllStates → device répond avec tous ses *StateChanged.
-    // cls=0 (Common), pas cls=4 (Controller).
-    val COMMON_ALL_STATES = Triple(0, 0, 0)
+    // cls=4 (Common). Envoyée sur (0,0,0) le drone ne répond RIEN (vérifié session 10).
+    val COMMON_ALL_STATES = Triple(0, 4, 0)
+
+    // Common.Common.CurrentDate / CurrentTime — même classe 4.
+    val COMMON_CURRENT_DATE = Triple(0, 4, 1)
+    val COMMON_CURRENT_TIME = Triple(0, 4, 2)
 
     // Requête : skyctrl.Common.AllStates → SC2 répond avec tous ses SkyControllerState.*.
     val SKYCTRL_ALL_STATES = Triple(4, 6, 0)
 
     // common.SettingsState.ProductVersionChanged → 2 strings (software, hardware).
-    val COMMON_PRODUCT_VERSION = Triple(0, 5, 0)
+    // cls=3 (SettingsState) — observé 12 B sur le wire.
+    val COMMON_PRODUCT_VERSION = Triple(0, 3, 3)
 
     // ardrone3.MediaRecordState.VideoStateChangedV2 → enum u32 state (0=stopped,1=started,2=failed,3=autostopped) + u8.
     val ARDRONE3_VIDEO_RECORD_STATE = Triple(1, 7, 3)

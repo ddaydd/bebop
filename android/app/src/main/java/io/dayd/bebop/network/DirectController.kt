@@ -7,7 +7,11 @@ import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import io.dayd.bebop.FileLogger as Log
 import io.dayd.bebop.arsdk.ArCommand
+import io.dayd.bebop.arsdk.ArStreamAck
+import io.dayd.bebop.arsdk.ArStreamReader
+import io.dayd.bebop.arsdk.ArsdkIds
 import io.dayd.bebop.arsdk.ArsdkTransport
+import io.dayd.bebop.video.RtpDepayloader
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -53,6 +57,79 @@ class DirectController(private val appContext: Context) {
     private val _droneFirmware = MutableStateFlow<String?>(null)
     val droneFirmware: StateFlow<String?> = _droneFirmware.asStateFlow()
 
+    /** Paquets UDP reçus du drone — prouve que le lien est vivant même sans ARCommand. */
+    private val _packetsIn = MutableStateFlow(0L)
+    val packetsIn: StateFlow<Long> = _packetsIn.asStateFlow()
+
+    /** Instant (uptimeMillis) du dernier paquet reçu, pour calculer l'âge côté UI. */
+    private val _lastPacketAt = MutableStateFlow(0L)
+    val lastPacketAt: StateFlow<Long> = _lastPacketAt.asStateFlow()
+
+    /** Dernier tuple ARCommand reçu, format "(prj,cls,cmd)". */
+    private val _lastTuple = MutableStateFlow<String?>(null)
+    val lastTuple: StateFlow<String?> = _lastTuple.asStateFlow()
+
+    // --- Vidéo ---------------------------------------------------------------
+    // Le drone peut streamer de deux façons selon ce qu'on déclare dans le
+    // CONN_REQ : ARStream2 (RTP sur un port UDP dédié) ou ARStream v1
+    // (fragments sur le buffer 125 du canal d2c). On gère les deux : le format
+    // réellement utilisé dépend du firmware et n'est pas connu à l'avance.
+
+    /** Sink des access units H.264 assemblées, branché par le ViewModel. */
+    @Volatile var videoFrameSink: ((ByteArray, Boolean) -> Unit)? = null
+
+    private val _videoFrames = MutableStateFlow(0L)
+    val videoFrames: StateFlow<Long> = _videoFrames.asStateFlow()
+
+    /** (packetsIn, packetsDropped, nalsOut) du dépéqueteur RTP. */
+    private val _rtpStats = MutableStateFlow(Triple(0L, 0L, 0L))
+    val rtpStats: StateFlow<Triple<Long, Long, Long>> = _rtpStats.asStateFlow()
+
+    /** "rtp" ou "arstream-v1" — quelle voie a effectivement livré des frames. */
+    private val _videoPath = MutableStateFlow<String?>(null)
+    val videoPath: StateFlow<String?> = _videoPath.asStateFlow()
+
+    private var videoSocket: DatagramSocket? = null
+    private var videoJob: Job? = null
+
+    private val rtpAccessUnit = java.io.ByteArrayOutputStream(128 * 1024)
+
+    private val rtpDepayloader = RtpDepayloader { nalAnnexB, marker ->
+        rtpAccessUnit.write(nalAnnexB)
+        if (marker) {
+            val frame = rtpAccessUnit.toByteArray()
+            rtpAccessUnit.reset()
+            emitVideoFrame(frame, "rtp")
+        }
+    }
+
+    private val arStreamReader = ArStreamReader(
+        onFrame = { _, _, data -> emitVideoFrame(data, "arstream-v1") },
+        onAckUpdate = { frameNum, low, high ->
+            // Sans ACK, le drone retransmet en boucle et finit par couper.
+            sendDirect(
+                ArsdkTransport.encode(
+                    ArsdkTransport.DATA_TYPE_ACK,
+                    ARSTREAM_V1_ACK_BUFFER,
+                    nextSeq(ARSTREAM_V1_ACK_BUFFER),
+                    ArStreamAck.encode(frameNum, low, high),
+                )
+            )
+        },
+    )
+
+    private fun emitVideoFrame(frame: ByteArray, path: String) {
+        val count = _videoFrames.value + 1
+        _videoFrames.value = count
+        if (_videoPath.value != path) {
+            _videoPath.value = path
+            Log.i(TAG, "vidéo directe : premières frames via $path (${frame.size}B)")
+        }
+        if (count % 300 == 0L) Log.d(TAG, "vidéo directe : $count frames, ${frame.size}B dernière")
+        _rtpStats.value = Triple(rtpDepayloader.packetsIn, rtpDepayloader.packetsDropped, rtpDepayloader.nalsOut)
+        videoFrameSink?.invoke(frame, true)
+    }
+
     private val seqByBuffer = ConcurrentHashMap<Int, AtomicInteger>()
 
     private fun nextSeq(bufferId: Int): Int =
@@ -89,7 +166,13 @@ class DirectController(private val appContext: Context) {
         val sock = Socket()
         sock.connect(InetSocketAddress(host, 44444), 3000)
         return sock.use { s ->
-            val request = """{"controller_type":"Android","controller_name":"BebopApp","d2c_port":$d2cPort}"""
+            // Déclarer les ports arstream2_* fait basculer le drone en RTP UDP
+            // direct vers le client. C'est inutilisable via le SC2 (le RTP ne
+            // traverse pas le MUX) mais c'est exactement ce qu'on veut ici,
+            // puisqu'on parle au drone sans intermédiaire.
+            val request = """{"controller_type":"Android","controller_name":"BebopApp","d2c_port":$d2cPort,""" +
+                """"arstream2_client_stream_port":$VIDEO_STREAM_PORT,""" +
+                """"arstream2_client_control_port":$VIDEO_CONTROL_PORT}"""
             s.getOutputStream().apply {
                 write(request.toByteArray(Charsets.UTF_8))
                 write(0)
@@ -141,7 +224,10 @@ class DirectController(private val appContext: Context) {
 
             c2dPort = config.first
             droneAddr = InetAddress.getByName(host)
-            Log.i(TAG, "Discovery OK: c2d=$c2dPort — ${config.second.take(80)}")
+            // JSON complet : il annonce les ports stream du drone et les
+            // paramètres ARStream (fragment size, etc.) — nécessaire pour
+            // diagnostiquer quelle voie vidéo le firmware a retenue.
+            Log.i(TAG, "Discovery OK: c2d=$c2dPort — ${config.second}")
 
             _droneStatus.value = "Ouverture UDP…"
             val sock = DatagramSocket(null as java.net.SocketAddress?)
@@ -157,21 +243,35 @@ class DirectController(private val appContext: Context) {
             pingJob = scope.launch { pingLoop() }
             pcmdJob = scope.launch { pcmdLoop() }
 
+            // Socket RTP : ouvert avant VideoEnable pour ne pas rater les
+            // premiers paquets (dont les SPS/PPS, sans lesquels le décodeur
+            // reste en attente).
+            runCatching {
+                val vsock = DatagramSocket(null as java.net.SocketAddress?)
+                net.bindSocket(vsock)
+                vsock.bind(java.net.InetSocketAddress(VIDEO_STREAM_PORT))
+                videoSocket = vsock
+                videoJob = scope.launch { videoLoop(vsock) }
+                Log.i(TAG, "socket vidéo RTP ouvert sur $VIDEO_STREAM_PORT")
+            }.onFailure { Log.w(TAG, "socket vidéo non ouvert: ${it.message}") }
+
             val now = java.util.Date()
             val dateFmt = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
             val timeFmt = java.text.SimpleDateFormat("'T'HHmmssZ", java.util.Locale.US)
             val dateStr = dateFmt.format(now)
             val timeStr = timeFmt.format(now)
-            sendArCommand(arCmdWithString(0, 0, 1, dateStr), ArsdkTransport.DATA_TYPE_WITHACK, ArsdkTransport.BUFFER_ID_C2D_CMD_WITHACK)
+            val (dPrj, dCls, dCmd) = ArsdkIds.COMMON_CURRENT_DATE
+            sendArCommand(arCmdWithString(dPrj, dCls, dCmd, dateStr), ArsdkTransport.DATA_TYPE_WITHACK, ArsdkTransport.BUFFER_ID_C2D_CMD_WITHACK)
             Log.i(TAG, "CurrentDate envoyé: $dateStr")
-            sendArCommand(arCmdWithString(0, 0, 2, timeStr), ArsdkTransport.DATA_TYPE_WITHACK, ArsdkTransport.BUFFER_ID_C2D_CMD_WITHACK)
+            val (tPrj, tCls, tCmd) = ArsdkIds.COMMON_CURRENT_TIME
+            sendArCommand(arCmdWithString(tPrj, tCls, tCmd, timeStr), ArsdkTransport.DATA_TYPE_WITHACK, ArsdkTransport.BUFFER_ID_C2D_CMD_WITHACK)
             Log.i(TAG, "CurrentTime envoyé: $timeStr")
 
             sendArCommand(ArCommand.noArgs(0, 2, 0), ArsdkTransport.DATA_TYPE_WITHACK, ArsdkTransport.BUFFER_ID_C2D_CMD_WITHACK)
             Log.i(TAG, "AllSettings (0,2,0) envoyé")
             kotlinx.coroutines.delay(500)
-            sendArCommand(ArCommand.noArgs(0, 0, 0), ArsdkTransport.DATA_TYPE_WITHACK, ArsdkTransport.BUFFER_ID_C2D_CMD_WITHACK)
-            Log.i(TAG, "AllStates (0,0,0) envoyé")
+            requestAllStates()
+            startVideo()
         } catch (e: Exception) {
             Log.w(TAG, "Connexion échouée: ${e.message}")
             _droneStatus.value = "Erreur : ${e.message}"
@@ -179,7 +279,57 @@ class DirectController(private val appContext: Context) {
         }
     }
 
+    /** Re-demande au drone de repousser tous ses states (dont la batterie). */
+    fun requestAllStates() {
+        scope.launch {
+            val (prj, cls, cmd) = ArsdkIds.COMMON_ALL_STATES
+            sendArCommand(ArCommand.noArgs(prj, cls, cmd), ArsdkTransport.DATA_TYPE_WITHACK, ArsdkTransport.BUFFER_ID_C2D_CMD_WITHACK)
+            Log.i(TAG, "AllStates ($prj,$cls,$cmd) envoyé")
+        }
+    }
+
+    /** VideoStreamMode(low_latency) puis VideoEnable(1) — le drone streame au sol. */
+    fun startVideo() {
+        scope.launch {
+            sendArCommand(ArCommand.videoStreamMode(0), ArsdkTransport.DATA_TYPE_WITHACK, ArsdkTransport.BUFFER_ID_C2D_CMD_WITHACK)
+            kotlinx.coroutines.delay(100)
+            sendArCommand(ArCommand.videoEnable(true), ArsdkTransport.DATA_TYPE_WITHACK, ArsdkTransport.BUFFER_ID_C2D_CMD_WITHACK)
+            Log.i(TAG, "VideoStreamMode(0) + VideoEnable(1) envoyés")
+        }
+    }
+
+    fun stopVideo() {
+        scope.launch {
+            sendArCommand(ArCommand.videoEnable(false), ArsdkTransport.DATA_TYPE_WITHACK, ArsdkTransport.BUFFER_ID_C2D_CMD_WITHACK)
+            Log.i(TAG, "VideoEnable(0) envoyé")
+        }
+    }
+
+    private suspend fun videoLoop(sock: DatagramSocket) = withContext(Dispatchers.IO) {
+        Log.i(TAG, "videoLoop: démarré sur port ${sock.localPort}")
+        val buf = ByteArray(65536)
+        var n = 0L
+        try {
+            while (isActive && !sock.isClosed) {
+                val pkt = DatagramPacket(buf, buf.size)
+                sock.receive(pkt)
+                n++
+                if (n == 1L) Log.i(TAG, "videoLoop: 1er paquet ${pkt.length}B de ${pkt.address}:${pkt.port}")
+                rtpDepayloader.feed(buf.copyOfRange(0, pkt.length))
+                if (n % 100 == 0L) {
+                    _rtpStats.value = Triple(rtpDepayloader.packetsIn, rtpDepayloader.packetsDropped, rtpDepayloader.nalsOut)
+                }
+            }
+        } catch (e: Exception) {
+            if (isActive) Log.w(TAG, "videoLoop: ${e.message} (après $n paquets)")
+        }
+    }
+
     fun disconnect() {
+        videoJob?.cancel()
+        videoJob = null
+        videoSocket?.close()
+        videoSocket = null
         pcmdJob?.cancel()
         pcmdJob = null
         pingJob?.cancel()
@@ -194,6 +344,9 @@ class DirectController(private val appContext: Context) {
         _droneStatus.value = "Déconnecté"
         _droneBattery.value = null
         _droneFirmware.value = null
+        _packetsIn.value = 0L
+        _lastPacketAt.value = 0L
+        _lastTuple.value = null
         seqByBuffer.clear()
     }
 
@@ -257,12 +410,22 @@ class DirectController(private val appContext: Context) {
         Log.i(TAG, "readLoop: démarré sur port ${sock.localPort}")
         val buf = ByteArray(65536)
         var pktCount = 0L
+        var lastStatsAt = android.os.SystemClock.uptimeMillis()
         try {
             while (isActive && !sock.isClosed) {
                 val pkt = DatagramPacket(buf, buf.size)
                 sock.receive(pkt)
                 pktCount++
+                val now = android.os.SystemClock.uptimeMillis()
+                _packetsIn.value = pktCount
+                _lastPacketAt.value = now
                 if (pktCount <= 3) Log.i(TAG, "readLoop: pkt #$pktCount ${pkt.length}B from ${pkt.address}:${pkt.port}")
+                // Stats périodiques : sans ça, un lien vivant qui n'envoie que des
+                // PONG/ACK (filtrés plus bas) est indiscernable d'un lien mort.
+                if (now - lastStatsAt >= 2000) {
+                    Log.i(TAG, "readLoop: $pktCount paquets reçus au total")
+                    lastStatsAt = now
+                }
                 val data = buf.copyOfRange(0, pkt.length)
                 processPacket(data)
             }
@@ -286,6 +449,12 @@ class DirectController(private val appContext: Context) {
                 val ackFrame = ArsdkTransport.encode(ArsdkTransport.DATA_TYPE_ACK, ackBuf, ackSeq, ackBody)
                 sendDirect(ackFrame)
             }
+            // Voie ARStream v1 : fragments vidéo sur le buffer 125 du canal d2c.
+            // Utilisée si le firmware ignore les ports arstream2_* déclarés.
+            if (frame.bufferId == ARSTREAM_V1_DATA_BUFFER) {
+                arStreamReader.feed(frame.body)
+                continue
+            }
             if (frame.dataType == ArsdkTransport.DATA_TYPE_ACK) continue
             if (frame.bufferId == ArsdkTransport.BUFFER_ID_PONG) continue
             if (frame.body.size < 4) continue
@@ -294,15 +463,16 @@ class DirectController(private val appContext: Context) {
             val cls = frame.body[1].toInt() and 0xff
             val cmd = (frame.body[2].toInt() and 0xff) or ((frame.body[3].toInt() and 0xff) shl 8)
             val args = frame.body.copyOfRange(4, frame.body.size)
+            _lastTuple.value = "($prj,$cls,$cmd)"
             Log.d(TAG, "ARCmd: ($prj,$cls,$cmd) args=${args.size}B  [type=${frame.dataType} buf=${frame.bufferId}]")
 
-            if (prj == 0 && cls == 1 && cmd == 1 && args.isNotEmpty()) {
+            if (Triple(prj, cls, cmd) == ArsdkIds.COMMON_BATTERY && args.isNotEmpty()) {
                 val pct = args[0].toInt() and 0xff
                 Log.i(TAG, "Batterie drone (direct): $pct%")
                 _droneBattery.value = pct
                 _droneStatus.value = "Connecté — batterie $pct%"
             }
-            if (prj == 0 && cls == 5 && cmd == 0) {
+            if (Triple(prj, cls, cmd) == ArsdkIds.COMMON_PRODUCT_VERSION) {
                 val sw = readCString(args, 0)
                 val hw = if (sw != null) readCString(args, sw.length + 1) else null
                 if (sw != null) {
@@ -322,5 +492,11 @@ class DirectController(private val appContext: Context) {
 
     companion object {
         private const val TAG = "Bebop"
+        /** Ports UDP locaux annoncés au drone pour le flux RTP ARStream2. */
+        private const val VIDEO_STREAM_PORT = 55004
+        private const val VIDEO_CONTROL_PORT = 55005
+        /** ARStream v1 : buffers ARNetwork (cf. ARDISCOVERY_DEVICE_Usb.c). */
+        private const val ARSTREAM_V1_DATA_BUFFER = 125
+        private const val ARSTREAM_V1_ACK_BUFFER = 13
     }
 }

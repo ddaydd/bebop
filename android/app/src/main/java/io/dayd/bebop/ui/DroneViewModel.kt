@@ -27,7 +27,10 @@ import io.dayd.bebop.network.UsbReport
 import io.dayd.bebop.network.getGatewaysFromContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
@@ -47,9 +50,18 @@ class DroneViewModel(app: Application) : AndroidViewModel(app) {
     val directDroneBattery: StateFlow<Int?> = directController.droneBattery
     val directDroneStatus: StateFlow<String> = directController.droneStatus
     val directDroneFirmware: StateFlow<String?> = directController.droneFirmware
+    val directPacketsIn: StateFlow<Long> = directController.packetsIn
+    val directVideoFrames: StateFlow<Long> = directController.videoFrames
+    val directRtpStats: StateFlow<Triple<Long, Long, Long>> = directController.rtpStats
+    val directVideoPath: StateFlow<String?> = directController.videoPath
+    fun directStartVideo() { directController.startVideo() }
+    fun directStopVideo() { directController.stopVideo() }
+    val directLastPacketAt: StateFlow<Long> = directController.lastPacketAt
+    val directLastTuple: StateFlow<String?> = directController.lastTuple
 
     fun directConnect() { viewModelScope.launch { directController.connect() } }
     fun directDisconnect() { directController.disconnect() }
+    fun directAllStates() { directController.requestAllStates() }
 
     private val aoaController = AoaController(app.applicationContext)
     val aoaState: StateFlow<AoaState> = aoaController.state
@@ -70,6 +82,21 @@ class DroneViewModel(app: Application) : AndroidViewModel(app) {
     val aoaVideoLastFlags: StateFlow<Int> = aoaController.videoLastFrameFlags
     val droneBatteryPercent: StateFlow<Int?> = aoaController.droneBatteryPercent
     val sc2BatteryPercent: StateFlow<Int?> = aoaController.sc2BatteryPercent
+
+    /**
+     * Batterie drone quelle que soit la voie utilisée (Wi-Fi direct ou SC2/AOA).
+     * Le direct prime : quand il est actif, c'est lui qui a la valeur fraîche.
+     */
+    val anyDroneBattery: StateFlow<Int?> =
+        combine(directController.droneBattery, aoaController.droneBatteryPercent) { direct, aoa ->
+            direct ?: aoa
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    /** Frames vidéo reçues, toutes voies confondues (Wi-Fi direct ou SC2). */
+    val anyVideoFrames: StateFlow<Long> =
+        combine(directController.videoFrames, aoaController.videoFrameCount) { direct, aoa ->
+            if (direct > 0) direct else aoa
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, 0L)
     val arCmdStats: StateFlow<Map<Triple<Int, Int, Int>, Long>> = aoaController.arCmdStats
     val arCmdLast: StateFlow<io.dayd.bebop.arsdk.ArCommandHeader?> = aoaController.arCmdLast
     val transportStats: StateFlow<Map<Pair<Int, Int>, Long>> = aoaController.transportStats
@@ -314,21 +341,26 @@ class DroneViewModel(app: Application) : AndroidViewModel(app) {
         _decoderSize.value = 0 to 0
         _decoderError.value = null
         aoaController.videoFrameSink = null
+        directController.videoFrameSink = null
         if (surface != null) {
             val dec = H264Decoder(surface)
             decoder = dec
-            aoaController.videoFrameSink = { data, key ->
+            // Même sink pour les deux voies : une seule est active à la fois.
+            val sink: (ByteArray, Boolean) -> Unit = { data, key ->
                 dec.feed(data, key)
                 _decoderConfigured.value = dec.configured
                 _decoderQueued.value = dec.framesQueued
                 _decoderSize.value = dec.outputWidth to dec.outputHeight
                 _decoderError.value = dec.lastError
             }
+            aoaController.videoFrameSink = sink
+            directController.videoFrameSink = sink
         }
     }
 
     override fun onCleared() {
         aoaController.videoFrameSink = null
+        directController.videoFrameSink = null
         decoder?.release()
         decoder = null
         super.onCleared()
