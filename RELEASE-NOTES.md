@@ -51,6 +51,11 @@
 - Overlay pilotage : le spinner s'arrête sur échec et un bouton **RÉESSAYER** apparaît — plus besoin de passer par la page debug
 - **Validé** : lancement à froid → vidéo live à l'écran en 0,9 s, sans aucune interaction (`pas de SC2 — voie Wi-Fi directe` → discovery → batterie 75 % → RTP)
 
+### Garde-fous avant le premier vol
+- **Sticks inhibés au sol tant que non armé.** La boucle PCMD tournant en permanence en Wi-Fi direct (c'est elle qui maintient la liaison), les joysticks étaient actifs avant même d'avoir armé — sans effet au sol, mais « ARMER » ne conditionnait en réalité que l'affichage de DÉCOLLER. Dès que le drone est en l'air, les sticks répondent **toujours**, armé ou non : perdre le contrôle en vol serait pire que tout ce que le garde-fou pourrait éviter. Un `flyingState` inconnu compte comme « au sol » → le garde-fou ne peut être trop strict qu'au sol, jamais en vol.
+- Message « Sticks inactifs — ARMER pour piloter » affiché tant qu'ils sont inhibés : des sticks volontairement inertes passent sinon pour une panne
+- **`STOP` renommé `DÉSARMER`** (et gris au lieu de rouge) : il n'a jamais stoppé le drone, il recentre les sticks et remasque DÉCOLLER. En vol le drone reste en stationnaire — pour couper c'est ATTERRIR ou URGENCE. Le libellé doit rester juste sous stress.
+
 ### Pièges documentés
 - Le drone ne libère le port 44444 que sur déconnexion propre : un `force-stop` laisse la session ouverte (toujours fermée 10 min après). Cliquer « Déconnecter » avant de réinstaller l'APK.
 - `ping`/`nc` depuis `adb shell` partent par `rmnet1` (données mobiles) → faux négatifs. Forcer `ping -I wlan0`.
