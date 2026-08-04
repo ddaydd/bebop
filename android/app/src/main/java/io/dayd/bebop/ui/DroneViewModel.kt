@@ -371,10 +371,31 @@ class DroneViewModel(app: Application) : AndroidViewModel(app) {
      */
     private fun useDirect(): Boolean = directController.connected.value
 
+    /**
+     * Vrai quand le drone n'est plus au sol (tout état ≠ 0 : décollage, vol,
+     * atterrissage…). `null` (état inconnu) est traité comme au sol, le cas
+     * prudent : au pire les sticks sont inhibés au sol, jamais en vol.
+     */
+    private fun airborne(): Boolean = directController.flyingState.value?.let { it != 0 } ?: false
+
+    /** Sticks inhibés : au sol, non armé. Un frôlement de l'écran n'envoie rien. */
+    val sticksInhibited: StateFlow<Boolean> =
+        combine(directController.connected, _directArmed, directController.flyingState) { conn, armed, fs ->
+            conn && !armed && (fs == null || fs == 0)
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
     fun setPilotingInput(roll: Int, pitch: Int, yaw: Int, gaz: Int) {
         val input = AoaController.PilotingInput(roll, pitch, yaw, gaz)
-        if (useDirect()) directController.setPilotingInput(input)
-        else aoaController.setPilotingInput(input)
+        if (useDirect()) {
+            // Dès que le drone est en l'air les sticks répondent toujours, armé
+            // ou non : perdre le contrôle en vol serait pire que tout ce qu'un
+            // garde-fou pourrait éviter.
+            if (!_directArmed.value && !airborne()) {
+                directController.centerSticks()
+                return
+            }
+            directController.setPilotingInput(input)
+        } else aoaController.setPilotingInput(input)
     }
 
     fun startPilotingLoop() {

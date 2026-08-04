@@ -40,6 +40,7 @@ fun PilotScreen(vm: DroneViewModel) {
     val sc2Batt by vm.sc2BatteryPercent.collectAsStateWithLifecycle()
     val directConnected by vm.directConnected.collectAsStateWithLifecycle()
     val flyingState by vm.directFlyingState.collectAsStateWithLifecycle()
+    val sticksInhibited by vm.sticksInhibited.collectAsStateWithLifecycle()
     val pilotingActive by vm.pilotingActive.collectAsStateWithLifecycle()
     val configured by vm.decoderConfigured.collectAsStateWithLifecycle()
     val aoaState by vm.aoaState.collectAsStateWithLifecycle()
@@ -195,6 +196,15 @@ fun PilotScreen(vm: DroneViewModel) {
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             if (!pilotingActive && connected) {
+                // Sans ce rappel, des sticks volontairement inertes passent pour
+                // une panne.
+                if (sticksInhibited) {
+                    Text(
+                        "Sticks inactifs — ARMER pour piloter",
+                        color = Color(0xFFFFD740),
+                        fontSize = 13.sp,
+                    )
+                }
                 PilotButton("ARMER", Color(0xFF2196F3)) {
                     vm.startPilotingLoop()
                 }
@@ -203,7 +213,11 @@ fun PilotScreen(vm: DroneViewModel) {
                 if (pilotingActive) {
                     PilotButton("DÉCOLLER", Color(0xFF4CAF50)) { vm.aoaTakeoff() }
                     PilotButton("ATTERRIR", Color(0xFFFFC107)) { vm.aoaLanding() }
-                    PilotButton("STOP", Color(0xFFFF1744)) { vm.stopPilotingLoop() }
+                    // « DÉSARMER » et pas « STOP » : ça ne stoppe pas le drone,
+                    // ça remet les sticks au neutre et remasque DÉCOLLER. En vol
+                    // le drone reste en stationnaire — couper, c'est ATTERRIR
+                    // ou URGENCE. Le mot doit rester juste sous stress.
+                    PilotButton("DÉSARMER", Color(0xFF757575)) { vm.stopPilotingLoop() }
                 }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
