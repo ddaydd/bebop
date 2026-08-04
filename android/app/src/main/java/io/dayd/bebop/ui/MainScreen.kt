@@ -414,7 +414,9 @@ private fun PilotingCard(vm: DroneViewModel) {
     val aoaState by vm.aoaState.collectAsStateWithLifecycle()
     val isOpen = aoaState is io.dayd.bebop.aoa.AoaState.Open
     val connResp by vm.aoaConnResp.collectAsStateWithLifecycle()
-    val canPilot = isOpen && connResp?.status == 0
+    val directConnected by vm.directConnected.collectAsStateWithLifecycle()
+    // Le drone est pilotable par l'une ou l'autre voie : SC2/AOA ou Wi-Fi direct.
+    val canPilot = (isOpen && connResp?.status == 0) || directConnected
 
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -437,7 +439,8 @@ private fun PilotingCard(vm: DroneViewModel) {
 
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Switch(checked = active, onCheckedChange = { vm.togglePilotingLoop() }, enabled = canPilot)
-                Text(if (active) "PCMD actif (20 Hz)" else "PCMD inactif")
+                // 25 Hz en Wi-Fi direct (boucle permanente), 20 Hz via le SC2.
+                Text(if (active) "PCMD actif (${if (directConnected) 25 else 20} Hz)" else "PCMD inactif")
             }
 
             PilotingSlider("Roll", input.roll) { vm.setPilotingInput(it, input.pitch, input.yaw, input.gaz) }

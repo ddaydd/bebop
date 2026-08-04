@@ -39,6 +39,7 @@ fun PilotScreen(vm: DroneViewModel) {
     val droneBatt by vm.anyDroneBattery.collectAsStateWithLifecycle()
     val sc2Batt by vm.sc2BatteryPercent.collectAsStateWithLifecycle()
     val directConnected by vm.directConnected.collectAsStateWithLifecycle()
+    val flyingState by vm.directFlyingState.collectAsStateWithLifecycle()
     val pilotingActive by vm.pilotingActive.collectAsStateWithLifecycle()
     val configured by vm.decoderConfigured.collectAsStateWithLifecycle()
     val aoaState by vm.aoaState.collectAsStateWithLifecycle()
@@ -114,6 +115,22 @@ fun PilotScreen(vm: DroneViewModel) {
             ) {
                 Box(Modifier.size(8.dp).background(statusColor, CircleShape))
                 HudText(statusText)
+                // En vol, l'état du drone prime sur tout le reste du HUD.
+                flyingState?.let { st ->
+                    val label = when (st) {
+                        0 -> "posé"; 1 -> "décollage"; 2 -> "stationnaire"; 3 -> "en vol"
+                        4 -> "atterrissage"; 5 -> "URGENCE"; 6 -> "décollage"
+                        7 -> "moteurs"; 8 -> "atterr. urgence"
+                        else -> "état $st"
+                    }
+                    val c = when (st) {
+                        0 -> Color(0xFFB0BEC5)
+                        2, 3 -> Color(0xFF69F0AE)
+                        5, 8 -> Color(0xFFFF1744)
+                        else -> Color(0xFFFFD740)
+                    }
+                    HudText(label, c)
+                }
                 if (recording) {
                     HudText("● REC", Color(0xFFFF1744))
                 }

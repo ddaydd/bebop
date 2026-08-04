@@ -7,6 +7,7 @@ import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import io.dayd.bebop.FileLogger as Log
 import io.dayd.bebop.arsdk.ArCommand
+import io.dayd.bebop.aoa.AoaController
 import io.dayd.bebop.arsdk.ArStreamAck
 import io.dayd.bebop.arsdk.ArStreamReader
 import io.dayd.bebop.arsdk.ArsdkIds
@@ -68,6 +69,25 @@ class DirectController(private val appContext: Context) {
     /** Dernier tuple ARCommand reçu, format "(prj,cls,cmd)". */
     private val _lastTuple = MutableStateFlow<String?>(null)
     val lastTuple: StateFlow<String?> = _lastTuple.asStateFlow()
+
+    /** ardrone3 FlyingStateChanged : 0=landed 1=takingoff 2=hovering 3=flying 4=landing 5=emergency. */
+    private val _flyingState = MutableStateFlow<Int?>(null)
+    val flyingState: StateFlow<Int?> = _flyingState.asStateFlow()
+
+    /** VideoStateChangedV2 : 0=stopped 1=started 2=failed 3=autostopped. */
+    private val _videoRecordState = MutableStateFlow<Int?>(null)
+    val videoRecordState: StateFlow<Int?> = _videoRecordState.asStateFlow()
+
+    private fun flyingStateLabel(s: Int): String = when (s) {
+        0 -> "posé"; 1 -> "décollage"; 2 -> "vol stationnaire"; 3 -> "en vol"
+        4 -> "atterrissage"; 5 -> "urgence"; 6 -> "décollage utilisateur"
+        7 -> "montée moteurs"; 8 -> "atterrissage d'urgence"
+        else -> "état $s"
+    }
+
+    private fun readU32Le(buf: ByteArray, off: Int): Int =
+        (buf[off].toInt() and 0xff) or ((buf[off + 1].toInt() and 0xff) shl 8) or
+            ((buf[off + 2].toInt() and 0xff) shl 16) or ((buf[off + 3].toInt() and 0xff) shl 24)
 
     // --- Vidéo ---------------------------------------------------------------
     // Le drone peut streamer de deux façons selon ce qu'on déclare dans le
@@ -347,6 +367,11 @@ class DirectController(private val appContext: Context) {
         _packetsIn.value = 0L
         _lastPacketAt.value = 0L
         _lastTuple.value = null
+        _flyingState.value = null
+        _videoRecordState.value = null
+        _videoFrames.value = 0L
+        _videoPath.value = null
+        centerSticks()
         seqByBuffer.clear()
     }
 
@@ -378,18 +403,77 @@ class DirectController(private val appContext: Context) {
         return buf.array()
     }
 
+    /**
+     * PCMD à 25 Hz en continu, y compris sticks au neutre : sans flux le drone
+     * considère le pilote absent après ~200 ms et coupe la liaison. La boucle
+     * tourne donc dès la connexion, indépendamment du fait qu'on soit en vol.
+     */
     private suspend fun pcmdLoop() = withContext(Dispatchers.IO) {
         var seq = 0
+        val started = System.currentTimeMillis()
         try {
             while (isActive && socket != null) {
-                val ts = (System.currentTimeMillis() and 0xFFFFFFFFL).toInt()
-                val pcmd = ArCommand.pcmd(0, 0, 0, 0, 0, ts)
+                val i = _pilotingInput.value
+                // flag=1 signale au drone que le pilote agit sur roll/pitch.
+                val flag = if (i.roll != 0 || i.pitch != 0) 1 else 0
+                val ts = (System.currentTimeMillis() - started).toInt()
+                val pcmd = ArCommand.pcmd(flag, i.roll, i.pitch, i.yaw, i.gaz, ts)
                 val frame = ArsdkTransport.encode(ArsdkTransport.DATA_TYPE_NOACK, ArsdkTransport.BUFFER_ID_C2D_CMD_NOACK, seq and 0xff, pcmd)
                 sendDirect(frame)
                 seq++
                 kotlinx.coroutines.delay(40)
             }
         } catch (_: Exception) {}
+    }
+
+    // --- Commandes de vol ----------------------------------------------------
+
+    private val _pilotingInput = MutableStateFlow(AoaController.PilotingInput())
+    val pilotingInput: StateFlow<AoaController.PilotingInput> = _pilotingInput.asStateFlow()
+
+    fun setPilotingInput(input: AoaController.PilotingInput) {
+        _pilotingInput.value = AoaController.PilotingInput(
+            roll = input.roll.coerceIn(-100, 100),
+            pitch = input.pitch.coerceIn(-100, 100),
+            yaw = input.yaw.coerceIn(-100, 100),
+            gaz = input.gaz.coerceIn(-100, 100),
+        )
+    }
+
+    /** Remet les sticks au neutre — utilisé à l'atterrissage et à la déconnexion. */
+    fun centerSticks() {
+        _pilotingInput.value = AoaController.PilotingInput()
+    }
+
+    fun sendTakeoff() = sendFlightCommand(ArCommand.takeoff(), "Takeoff")
+    fun sendLanding() = sendFlightCommand(ArCommand.landing(), "Landing")
+    fun sendFlatTrim() = sendFlightCommand(ArCommand.flatTrim(), "FlatTrim")
+    fun sendVideoRecord(start: Boolean) =
+        sendFlightCommand(ArCommand.videoRecord(start), "VideoRecord($start)")
+
+    /**
+     * Emergency coupe les moteurs immédiatement. Passe par le buffer HIGHPRIO
+     * pour shortcut la queue WITHACK, qui peut être saturée au pire moment,
+     * et remet les sticks au neutre pour qu'aucun PCMD résiduel ne parte.
+     */
+    fun sendEmergency() {
+        centerSticks()
+        sendFlightCommand(ArCommand.emergency(), "EMERGENCY", ArsdkTransport.BUFFER_ID_C2D_CMD_HIGHPRIO)
+    }
+
+    private fun sendFlightCommand(
+        payload: ByteArray,
+        label: String,
+        bufferId: Int = ArsdkTransport.BUFFER_ID_C2D_CMD_WITHACK,
+    ) {
+        if (socket == null) {
+            Log.w(TAG, "$label ignoré : pas connecté")
+            return
+        }
+        scope.launch {
+            sendArCommand(payload, ArsdkTransport.DATA_TYPE_WITHACK, bufferId)
+            Log.i(TAG, "$label envoyé (direct)")
+        }
     }
 
     private suspend fun pingLoop() = withContext(Dispatchers.IO) {
@@ -471,6 +555,18 @@ class DirectController(private val appContext: Context) {
                 Log.i(TAG, "Batterie drone (direct): $pct%")
                 _droneBattery.value = pct
                 _droneStatus.value = "Connecté — batterie $pct%"
+            }
+            // ardrone3.PilotingState.FlyingStateChanged — savoir si le drone vole
+            // conditionne l'UI (on n'affiche pas DÉCOLLER en vol).
+            if (prj == 1 && cls == 4 && cmd == 1 && args.size >= 4) {
+                val st = readU32Le(args, 0)
+                if (_flyingState.value != st) {
+                    Log.i(TAG, "FlyingState: $st (${flyingStateLabel(st)})")
+                    _flyingState.value = st
+                }
+            }
+            if (Triple(prj, cls, cmd) == ArsdkIds.ARDRONE3_VIDEO_RECORD_STATE && args.size >= 4) {
+                _videoRecordState.value = readU32Le(args, 0)
             }
             if (Triple(prj, cls, cmd) == ArsdkIds.COMMON_PRODUCT_VERSION) {
                 val sw = readCString(args, 0)

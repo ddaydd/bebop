@@ -263,7 +263,10 @@ class DroneViewModel(app: Application) : AndroidViewModel(app) {
     val chan4RawHead: StateFlow<String?> = aoaController.chan4RawHead
     val assembledFrameHead: StateFlow<String?> = aoaController.assembledFrameHead
     val droneFirmware: StateFlow<String?> = aoaController.droneFirmware
-    val videoRecordState: StateFlow<Int?> = aoaController.videoRecordState
+    val videoRecordState: StateFlow<Int?> =
+        combine(directController.videoRecordState, aoaController.videoRecordState) { direct, aoa ->
+            direct ?: aoa
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
     val videoEnableState: StateFlow<Int?> = aoaController.videoEnableState
     val videoStreamMode: StateFlow<Int?> = aoaController.videoStreamMode
 
@@ -284,9 +287,10 @@ class DroneViewModel(app: Application) : AndroidViewModel(app) {
     fun aoaAutoConnect() { viewModelScope.launch { autoConnect() } }
 
     fun aoaToggleRecord() {
-        viewModelScope.launch {
-            val recording = aoaController.videoRecordState.value == 1
-            aoaController.sendVideoRecord(!recording)
+        if (useDirect()) {
+            directController.sendVideoRecord(directController.videoRecordState.value != 1)
+        } else viewModelScope.launch {
+            aoaController.sendVideoRecord(aoaController.videoRecordState.value != 1)
         }
     }
     val c2dSent: StateFlow<Map<String, Long>> = aoaController.c2dSent
@@ -300,24 +304,72 @@ class DroneViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     val pilotingInput: StateFlow<AoaController.PilotingInput> = aoaController.pilotingInput
-    val pilotingActive: StateFlow<Boolean> = aoaController.pilotingActive
+
+    /**
+     * En Wi-Fi direct la boucle PCMD tourne en permanence (elle maintient la
+     * liaison), donc rien à « démarrer ». On garde malgré tout un armement
+     * explicite : sans lui les boutons DÉCOLLER/URGENCE seraient exposés en
+     * permanence, à un tap d'un décollage involontaire.
+     */
+    private val _directArmed = MutableStateFlow(false)
+
+    val pilotingActive: StateFlow<Boolean> =
+        combine(aoaController.pilotingActive, _directArmed) { aoa, direct -> aoa || direct }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    /** État de vol du drone (Wi-Fi direct) — null si inconnu. */
+    val directFlyingState: StateFlow<Int?> = directController.flyingState
+
+    /**
+     * Voie active pour les commandes de vol. Le Wi-Fi direct prime : quand il
+     * est connecté c'est lui qui parle au drone, le SC2 n'étant qu'un relais
+     * alternatif. Envoyer sur les deux ferait partir chaque commande en double.
+     */
+    private fun useDirect(): Boolean = directController.connected.value
 
     fun setPilotingInput(roll: Int, pitch: Int, yaw: Int, gaz: Int) {
-        aoaController.setPilotingInput(AoaController.PilotingInput(roll, pitch, yaw, gaz))
+        val input = AoaController.PilotingInput(roll, pitch, yaw, gaz)
+        if (useDirect()) directController.setPilotingInput(input)
+        else aoaController.setPilotingInput(input)
     }
 
-    fun startPilotingLoop() = aoaController.startPilotingLoop()
-    fun stopPilotingLoop() = aoaController.stopPilotingLoop()
+    fun startPilotingLoop() {
+        if (useDirect()) _directArmed.value = true
+        else aoaController.startPilotingLoop()
+    }
+
+    fun stopPilotingLoop() {
+        if (useDirect()) {
+            _directArmed.value = false
+            directController.centerSticks()
+        } else aoaController.stopPilotingLoop()
+    }
 
     fun togglePilotingLoop() {
-        if (aoaController.pilotingActive.value) stopPilotingLoop()
+        if (pilotingActive.value) stopPilotingLoop()
         else startPilotingLoop()
     }
 
-    fun aoaTakeoff() { viewModelScope.launch { aoaController.sendTakeoff() } }
-    fun aoaLanding() { viewModelScope.launch { aoaController.sendLanding() } }
-    fun aoaEmergency() { viewModelScope.launch { aoaController.sendEmergency() } }
-    fun aoaFlatTrim() { viewModelScope.launch { aoaController.sendFlatTrim() } }
+    fun aoaTakeoff() {
+        if (useDirect()) directController.sendTakeoff()
+        else viewModelScope.launch { aoaController.sendTakeoff() }
+    }
+
+    fun aoaLanding() {
+        if (useDirect()) {
+            directController.centerSticks()
+            directController.sendLanding()
+        } else viewModelScope.launch { aoaController.sendLanding() }
+    }
+
+    fun aoaEmergency() {
+        if (useDirect()) directController.sendEmergency()
+        else viewModelScope.launch { aoaController.sendEmergency() }
+    }
+    fun aoaFlatTrim() {
+        if (useDirect()) directController.sendFlatTrim()
+        else viewModelScope.launch { aoaController.sendFlatTrim() }
+    }
 
     private var decoder: H264Decoder? = null
 
