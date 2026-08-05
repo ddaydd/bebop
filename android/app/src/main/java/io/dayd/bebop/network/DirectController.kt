@@ -3,8 +3,6 @@ package io.dayd.bebop.network
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
-import android.net.NetworkCapabilities
-import android.net.NetworkRequest
 import io.dayd.bebop.FileLogger as Log
 import io.dayd.bebop.arsdk.ArCommand
 import io.dayd.bebop.aoa.AoaController
@@ -22,9 +20,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
@@ -32,12 +28,12 @@ import java.net.InetSocketAddress
 import java.net.Socket
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
-import kotlin.coroutines.resume
 
 class DirectController(private val appContext: Context) {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val cm = appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+    private val droneWifi = DroneWifi(appContext)
     private var socket: DatagramSocket? = null
     private var droneAddr: InetAddress? = null
     private var c2dPort: Int = 0
@@ -54,6 +50,13 @@ class DirectController(private val appContext: Context) {
 
     private val _droneStatus = MutableStateFlow("Non connecté")
     val droneStatus: StateFlow<String> = _droneStatus.asStateFlow()
+
+    /**
+     * Wi-Fi du téléphone éteint. L'app ne peut pas le rallumer elle-même
+     * (interdit depuis Android 10) : l'UI doit ouvrir le panneau système.
+     */
+    private val _wifiOff = MutableStateFlow(false)
+    val wifiOff: StateFlow<Boolean> = _wifiOff.asStateFlow()
 
     private val _droneFirmware = MutableStateFlow<String?>(null)
     val droneFirmware: StateFlow<String?> = _droneFirmware.asStateFlow()
@@ -285,31 +288,29 @@ class DirectController(private val appContext: Context) {
     private fun nextSeq(bufferId: Int): Int =
         seqByBuffer.getOrPut(bufferId) { AtomicInteger(0) }.getAndIncrement() and 0xff
 
-    private suspend fun findWifiNetwork(): Network? {
-        val req = NetworkRequest.Builder()
-            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
-            .build()
-        return withTimeoutOrNull(5000L) {
-            suspendCancellableCoroutine { cont ->
-                var unregistered = false
-                val cb = object : ConnectivityManager.NetworkCallback() {
-                    override fun onAvailable(network: Network) {
-                        if (!unregistered) {
-                            unregistered = true
-                            runCatching { cm.unregisterNetworkCallback(this) }
-                        }
-                        cont.resume(network)
-                    }
-                }
-                cont.invokeOnCancellation {
-                    if (!unregistered) {
-                        unregistered = true
-                        runCatching { cm.unregisterNetworkCallback(cb) }
-                    }
-                }
-                cm.requestNetwork(req, cb)
-            }
+    /**
+     * Réseau Wi-Fi qui mène au drone. On ne se contente plus du premier Wi-Fi
+     * venu : sur le Wi-Fi de la maison la discovery échouait six fois de suite
+     * avant d'afficher « drone introuvable », alors que le vrai problème était
+     * qu'on n'était pas sur le bon réseau.
+     */
+    private suspend fun obtainDroneNetwork(): Network? {
+        if (!droneWifi.enabled) {
+            _wifiOff.value = true
+            _droneStatus.value = "Wi-Fi du téléphone désactivé"
+            return null
         }
+        _wifiOff.value = false
+        droneWifi.currentDroneNet()?.let {
+            Log.i(TAG, "déjà connecté au Wi-Fi du drone: $it")
+            return it
+        }
+        _droneStatus.value = "Rejoindre le Wi-Fi ${DroneWifi.SSID_PREFIX}… (accepter sur le téléphone)"
+        val joined = droneWifi.joinDroneAp()
+        if (joined == null) {
+            _droneStatus.value = "Wi-Fi du drone refusé ou hors de portée — drone allumé ?"
+        }
+        return joined
     }
 
     private suspend fun discovery(host: String, d2cPort: Int): Pair<Int, String> {
@@ -345,13 +346,9 @@ class DirectController(private val appContext: Context) {
 
     suspend fun connect(host: String = "192.168.42.1", d2cPort: Int = 43210) {
         disconnect()
-        _droneStatus.value = "Recherche réseau Wi-Fi…"
+        _droneStatus.value = "Recherche du Wi-Fi du drone…"
         try {
-            val net = findWifiNetwork()
-            if (net == null) {
-                _droneStatus.value = "Aucun Wi-Fi trouvé — connecter au Bebop2"
-                return
-            }
+            val net = obtainDroneNetwork() ?: return
             wifiNetwork = net
             Log.i(TAG, "Wi-Fi network trouvé: $net")
             cm.bindProcessToNetwork(net)
@@ -493,6 +490,9 @@ class DirectController(private val appContext: Context) {
         socket = null
         if (wifiNetwork != null) cm.bindProcessToNetwork(null)
         wifiNetwork = null
+        // Libère l'association Wi-Fi réservée à l'app, s'il y en avait une.
+        // Tant qu'elle est tenue, le téléphone reste accroché à l'AP du drone.
+        droneWifi.release()
         _connected.value = false
         _droneStatus.value = "Déconnecté"
         _droneBattery.value = null

@@ -54,6 +54,7 @@ fun PilotScreen(vm: DroneViewModel) {
     val videoFrames by vm.anyVideoFrames.collectAsStateWithLifecycle()
 
     val autoStatus by vm.autoStatus.collectAsStateWithLifecycle()
+    val mode by vm.flightMode.collectAsStateWithLifecycle()
     val recordState by vm.videoRecordState.collectAsStateWithLifecycle()
     val recording = recordState == 1
     // Deux voies possibles vers le drone : SC2/AOA ou Wi-Fi direct. L'une suffit.
@@ -197,10 +198,8 @@ fun PilotScreen(vm: DroneViewModel) {
         if (!connected) {
             // Une tentative terminée sans succès laisse un statut d'échec : on
             // arrête le spinner et on propose de relancer sans passer par debug.
-            val failed = aoaState is io.dayd.bebop.aoa.AoaState.Error ||
-                autoStatus.startsWith("Drone introuvable") ||
-                autoStatus.startsWith("Erreur") ||
-                autoStatus.startsWith("Aucun Wi-Fi")
+            val failed = (mode == FlightMode.Sc2 && aoaState is io.dayd.bebop.aoa.AoaState.Error) ||
+                FAILURE_PREFIXES.any { autoStatus.startsWith(it) }
             Column(
                 modifier = Modifier.align(Alignment.Center),
                 horizontalAlignment = Alignment.CenterHorizontally,
@@ -209,32 +208,50 @@ fun PilotScreen(vm: DroneViewModel) {
                 if (!failed) {
                     CircularProgressIndicator(color = Color.White)
                 }
+                HudText(
+                    when (mode) {
+                        FlightMode.Sc2 -> "Mode manette SC2"
+                        FlightMode.Phone -> "Mode téléphone seul"
+                        null -> ""
+                    },
+                    Color(0xFF90A4AE),
+                )
                 Text(
                     autoStatus,
                     color = if (failed) Color(0xFFFF5252) else Color.White,
                     fontSize = 16.sp,
                 )
                 if (failed) {
-                    PilotButton("RÉESSAYER", Color(0xFF2196F3)) { vm.retryAutoConnect() }
+                    Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                        PilotButton("RÉESSAYER", Color(0xFF2196F3)) { vm.retryAutoConnect() }
+                        // Se tromper de mode est l'erreur la plus probable ici :
+                        // il faut pouvoir en changer sans quitter l'app.
+                        PilotButton("CHANGER DE MODE", Color(0xFF546E7A)) { vm.leaveMode() }
+                    }
                 }
             }
         }
 
-        // Joystick areas — bottom 55%
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .fillMaxHeight(0.55f)
-                .align(Alignment.BottomCenter),
-        ) {
-            FloatingJoystick(
-                modifier = Modifier.weight(1f).fillMaxHeight(),
-                onInput = { x, y -> leftX = x; leftY = y; updatePiloting() },
-            )
-            FloatingJoystick(
-                modifier = Modifier.weight(1f).fillMaxHeight(),
-                onInput = { x, y -> rightX = x; rightY = y; updatePiloting() },
-            )
+        // Joystick areas — bottom 55%.
+        // Masqués tant qu'on n'est pas connecté : ils couvrent la moitié basse
+        // de l'écran et avalent les taps destinés aux boutons de l'overlay, qui
+        // devenaient impossibles à appuyer. Sans drone ils ne servent à rien.
+        if (connected) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .fillMaxHeight(0.55f)
+                    .align(Alignment.BottomCenter),
+            ) {
+                FloatingJoystick(
+                    modifier = Modifier.weight(1f).fillMaxHeight(),
+                    onInput = { x, y -> leftX = x; leftY = y; updatePiloting() },
+                )
+                FloatingJoystick(
+                    modifier = Modifier.weight(1f).fillMaxHeight(),
+                    onInput = { x, y -> rightX = x; rightY = y; updatePiloting() },
+                )
+            }
         }
 
         // Action buttons — center bottom
@@ -295,6 +312,22 @@ fun PilotScreen(vm: DroneViewModel) {
         }
     }
 }
+
+/**
+ * Débuts de statut qui signalent une tentative terminée en échec — le spinner
+ * doit alors s'arrêter et laisser place aux boutons.
+ */
+private val FAILURE_PREFIXES = listOf(
+    "Erreur",
+    "Drone introuvable",
+    "SC2 non détecté",
+    "SC2 muet",
+    "SC2 OK mais",
+    "Aucun appareil",
+    "Aucun Wi-Fi",
+    "Wi-Fi du téléphone désactivé",
+    "Wi-Fi du drone refusé",
+)
 
 @Composable
 private fun HudText(text: String, color: Color = Color.White) {

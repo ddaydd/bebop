@@ -35,6 +35,20 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
+/**
+ * Voie choisie par le pilote au lancement. Le mode n'est plus déduit du
+ * matériel branché : deviner rendait les échecs illisibles (un SC2 mal détecté
+ * basculait en Wi-Fi et affichait « connecté » alors que la manette était
+ * censée piloter).
+ */
+enum class FlightMode {
+    /** Manette Skycontroller 2 en USB, qui relaie vers le drone en Wi-Fi. */
+    Sc2,
+
+    /** Téléphone seul, connecté directement à l'AP Wi-Fi du drone. */
+    Phone,
+}
+
 sealed interface ConnectionState {
     data object Idle : ConnectionState
     data object Connecting : ConnectionState
@@ -142,30 +156,89 @@ class DroneViewModel(app: Application) : AndroidViewModel(app) {
 
     private var autoConnectJob: Job? = null
 
+    /** Wi-Fi du téléphone éteint — l'UI propose d'ouvrir le panneau système. */
+    val directWifiOff: StateFlow<Boolean> = directController.wifiOff
+
+    /**
+     * Mode de vol choisi. `null` tant que le pilote n'a pas répondu : l'app
+     * démarre sur l'écran de choix et ne touche à rien avant.
+     */
+    private val _flightMode = MutableStateFlow<FlightMode?>(null)
+    val flightMode: StateFlow<FlightMode?> = _flightMode.asStateFlow()
+
+    /** SC2 présent sur le port USB, rafraîchi tant qu'on est sur l'écran de choix. */
+    private val _sc2Plugged = MutableStateFlow(false)
+    val sc2Plugged: StateFlow<Boolean> = _sc2Plugged.asStateFlow()
+
+    /** Wi-Fi du téléphone allumé — prérequis du mode « téléphone seul ». */
+    private val _wifiEnabled = MutableStateFlow(true)
+    val wifiEnabled: StateFlow<Boolean> = _wifiEnabled.asStateFlow()
+
+    private val droneWifi = io.dayd.bebop.network.DroneWifi(app.applicationContext)
+
     init {
         refreshDiagnostic()
+        // Pas de connexion automatique ici : c'est le choix du mode qui la
+        // déclenche. Seule la détection du matériel tourne, pour renseigner
+        // l'écran de choix — et elle s'arrête dès qu'un mode est retenu.
+        viewModelScope.launch {
+            while (true) {
+                if (_flightMode.value == null) refreshHardwarePresence()
+                kotlinx.coroutines.delay(1500)
+            }
+        }
+    }
+
+    private fun refreshHardwarePresence() {
+        _sc2Plugged.value = runCatching { UsbInspector.snapshot(getApplication()) }
+            .getOrNull()?.accessories?.isNotEmpty() == true
+        _wifiEnabled.value = droneWifi.enabled
+    }
+
+    /** Applique le mode choisi par le pilote et lance la connexion correspondante. */
+    fun chooseMode(mode: FlightMode) {
+        if (_flightMode.value == mode && autoConnectJob?.isActive == true) return
+        _flightMode.value = mode
+        _autoStatus.value = "Démarrage…"
         retryAutoConnect()
     }
 
     /**
-     * Choisit la voie puis se connecte. Le SC2 branché en USB prime : c'est un
-     * choix matériel explicite. Sinon on tente le Wi-Fi direct, qui est le mode
-     * nominal tant que le module Wi-Fi du SC2 est HS.
+     * Revient à l'écran de choix. Coupe les deux voies : rester connecté en
+     * changeant de mode laisserait la session ouverte côté drone, qui refuse
+     * alors toute nouvelle connexion pendant une trentaine de secondes.
+     */
+    fun leaveMode() {
+        autoConnectJob?.cancel()
+        autoConnectJob = null
+        directController.disconnect()
+        aoaController.disconnect()
+        _flightMode.value = null
+        _autoStatus.value = "Démarrage…"
+        refreshHardwarePresence()
+    }
+
+    /**
+     * (Re)lance la connexion dans le mode choisi. Aucune bascule automatique
+     * vers l'autre voie : si le mode SC2 échoue, il le dit au lieu de partir en
+     * Wi-Fi, sinon l'écran affiche « connecté » sans que la manette pilote.
      */
     fun retryAutoConnect() {
         if (autoConnectJob?.isActive == true) return
+        val mode = _flightMode.value ?: return
         autoConnectJob = viewModelScope.launch {
-            val hasSc2 = runCatching { UsbInspector.snapshot(getApplication()) }
-                .getOrNull()?.accessories?.isNotEmpty() == true
-            if (hasSc2) {
-                Log.i(TAG, "autoConnect: SC2 détecté en USB — voie AOA")
-                runCatching { autoConnect() }.onFailure {
-                    Log.w(TAG, "autoConnect AOA échoué: ${it.message}")
-                    _autoStatus.value = "Erreur SC2 : ${it.message}"
+            when (mode) {
+                FlightMode.Sc2 -> {
+                    Log.i(TAG, "connexion: mode SC2 — voie AOA")
+                    runCatching { autoConnect() }.onFailure {
+                        Log.w(TAG, "AOA échoué: ${it.message}")
+                        _autoStatus.value = "Erreur SC2 : ${it.message}"
+                    }
                 }
-            } else {
-                Log.i(TAG, "autoConnect: pas de SC2 — voie Wi-Fi directe")
-                autoConnectDirect()
+                FlightMode.Phone -> {
+                    Log.i(TAG, "connexion: mode téléphone seul — voie Wi-Fi directe")
+                    autoConnectDirect()
+                }
             }
         }
     }
@@ -184,7 +257,9 @@ class DroneViewModel(app: Application) : AndroidViewModel(app) {
         _autoStatus.value = if (directController.connected.value) {
             directController.droneStatus.value
         } else {
-            "Drone introuvable — connecter le Pixel au Wi-Fi Bebop2-…"
+            // Le message de DirectController est plus précis que tout ce qu'on
+            // pourrait écrire ici : Wi-Fi éteint, AP refusé, drone muet…
+            directController.droneStatus.value.ifBlank { "Drone introuvable" }
         }
     }
 
@@ -196,16 +271,25 @@ class DroneViewModel(app: Application) : AndroidViewModel(app) {
             val aoaResult = aoaController.state.first { it is AoaState.Open || it is AoaState.Error }
             if (aoaResult is AoaState.Error) {
                 Log.w(TAG, "autoConnect: AOA échoué — ${aoaResult.message}")
-                _autoStatus.value = "Erreur AOA — brancher le SC2"
+                _autoStatus.value = "SC2 non détecté — vérifier le câble USB"
                 return
             }
         }
         Log.i(TAG, "autoConnect: AOA ouvert")
 
+        // Chaque attente est bornée : sans timeout, une manette qui ne répond
+        // pas laisse un spinner tourner sans fin, ce qui se lit comme une app
+        // plantée alors que l'étape exacte qui bloque est connue.
         _autoStatus.value = "Handshake MUX…"
         if (aoaController.ctrlHistory.value.isEmpty()) {
             aoaController.sendHandshake(isAck = false)
-            aoaController.ctrlHistory.first { it.isNotEmpty() }
+            val ok = kotlinx.coroutines.withTimeoutOrNull(STEP_TIMEOUT_MS) {
+                aoaController.ctrlHistory.first { it.isNotEmpty() }
+            }
+            if (ok == null) {
+                _autoStatus.value = "SC2 muet — pas de réponse au handshake"
+                return
+            }
         }
         Log.i(TAG, "autoConnect: handshake OK — canaux MUX ouverts")
 
@@ -213,7 +297,13 @@ class DroneViewModel(app: Application) : AndroidViewModel(app) {
         if (aoaController.devices.value.isEmpty()) {
             aoaController.sendDiscover()
         }
-        val devices = aoaController.devices.first { it.isNotEmpty() }
+        val devices = kotlinx.coroutines.withTimeoutOrNull(STEP_TIMEOUT_MS) {
+            aoaController.devices.first { it.isNotEmpty() }
+        }
+        if (devices == null) {
+            _autoStatus.value = "Aucun appareil annoncé par le SC2"
+            return
+        }
         Log.i(TAG, "autoConnect: ${devices.size} device(s) trouvé(s) — ${devices.first().name}")
 
         val dev = devices.first()
@@ -221,8 +311,16 @@ class DroneViewModel(app: Application) : AndroidViewModel(app) {
         if (aoaController.connResp.value?.status != 0) {
             aoaController.sendConnect(dev.id)
         }
-        val resp = aoaController.connResp.first { it != null && it.status == 0 }
-        Log.i(TAG, "autoConnect: CONN_RESP ok — ${resp!!.json.take(80)}")
+        val resp = kotlinx.coroutines.withTimeoutOrNull(STEP_TIMEOUT_MS) {
+            aoaController.connResp.first { it != null && it.status == 0 }
+        }
+        if (resp == null) {
+            // Cas classique : la manette est bien là mais elle n'a pas accroché
+            // le Wi-Fi du drone (LED orange). Le drone doit être allumé d'abord.
+            _autoStatus.value = "SC2 OK mais drone injoignable — LED verte sur la manette ?"
+            return
+        }
+        Log.i(TAG, "autoConnect: CONN_RESP ok — ${resp.json.take(80)}")
 
         _autoStatus.value = "Ouverture flux vidéo…"
         kotlinx.coroutines.delay(300)
@@ -240,6 +338,9 @@ class DroneViewModel(app: Application) : AndroidViewModel(app) {
 
     companion object {
         private const val TAG = "Bebop"
+
+        /** Attente maximale par étape de la séquence SC2 (handshake, discover, connect). */
+        private const val STEP_TIMEOUT_MS = 12_000L
     }
 
     fun setHost(value: String) {

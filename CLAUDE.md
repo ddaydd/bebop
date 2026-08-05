@@ -76,7 +76,7 @@ Câble USB-A → USB-C standard "data" suffit (le SC2 est USB host, le Pixel est
 - Ordre d'allumage : **drone d'abord** (attendre LED fixe), **SC2 ensuite** (attendre LED verte fixe = connecté au drone).
 - Si LED SC2 reste orange clignotante : pas connecté. Reset usine SC2 = débrancher batterie 1-2 min.
 - L'appairage initial drone↔SC2 nécessitait FreeFlight Pro à l'origine (qui ne marche plus). Si le SC2 a déjà été apparié au drone, il se reconnecte tout seul.
-- **SC2 actuel a un problème Wi-Fi matériel** : module Wi-Fi probablement dégradé (oxydation patchs antenne). LED orange clignotante = "searching". Le SC2 connaît le drone (serial PI040384AG7C087996) mais ne capte pas son Wi-Fi, même à 1 mètre. Se connecte brièvement parfois puis perd la connexion. Piste : nettoyage alcool isopropylique des patchs antenne.
+- **Panne Wi-Fi du SC2 — RÉSOLUE par nettoyage des composants Wi-Fi (2026-08-05)**. Historique : le SC2 restait en LED orange clignotante ("searching"), connaissait le drone (serial PI040384AG7C087996) mais ne captait pas son Wi-Fi même à 1 mètre — oxydation des patchs antenne. Le nettoyage a rétabli la connexion drone↔SC2. Si le symptôme revient, refaire un nettoyage avant de suspecter le firmware ou l'appairage.
 - **Pas de port micro-USB** visible sur ce SC2 (carte MPP_MB_07). Pas d'accès ADB au SC2.
 
 ## Connexion directe Pixel → Bebop 2 (Wi-Fi, sans SC2)

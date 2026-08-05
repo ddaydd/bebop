@@ -1,5 +1,34 @@
 # Release Notes
 
+## 2026-08-05 (session 11)
+
+### Le mode de vol est choisi au lancement, plus deviné
+- Nouvel écran `ModeScreen` en premier plan : **Avec la manette (SC2)** ou **Téléphone seul (Wi-Fi direct)**. Rien n'est tenté avant la réponse.
+- Avant, `retryAutoConnect()` décidait seul : SC2 branché → AOA, sinon Wi-Fi. Un SC2 mal détecté basculait en Wi-Fi et affichait « connecté » alors que la manette était censée piloter — l'échec désignait le mauvais coupable.
+- Une seule voie est essayée par mode. `FlightMode` (`Sc2` / `Phone`) dans `DroneViewModel`, `chooseMode()` / `leaveMode()`.
+- L'écran reflète le matériel en temps réel (sondage 1,5 s) : manette branchée ou non, Wi-Fi du téléphone allumé ou non, avec pastille verte/ambre.
+- Retour au choix par **CHANGER DE MODE** (overlay d'échec du pilotage) et **Changer de mode** (écran debug). `leaveMode()` coupe les deux voies avant de rendre la main : garder la session ouverte côté drone le ferait refuser toute reconnexion pendant ~30 s.
+
+### L'app rejoint elle-même le Wi-Fi du drone
+- Nouveau `network/DroneWifi.kt`. En mode téléphone seul : si le téléphone est déjà sur l'AP du drone on le réutilise, sinon `WifiNetworkSpecifier` avec motif de SSID `Bebop2-` → Android affiche sa popup, ne propose que le drone, et le réseau obtenu est réservé à l'app.
+- `DirectController.findWifiNetwork()` prenait **n'importe quel** Wi-Fi : sur le réseau de la maison, la discovery échouait six fois avant d'annoncer « drone introuvable », alors que le vrai problème était le réseau. Remplacé par `obtainDroneNetwork()`.
+- Détection de l'AP par l'adresse DHCP (`192.168.42.x`) et non par le SSID : le lire demanderait la permission de localisation, et sonder le port 44444 risquerait de consommer la session de discovery que le drone n'accorde qu'une fois.
+- La callback du specifier reste enregistrée toute la session — la désinscrire coupe l'association. `release()` à la déconnexion.
+- Wi-Fi éteint : l'app ne peut plus le rallumer (Android 10+), elle le dit et ouvre le panneau système.
+- **Validé terrain** : depuis le Wi-Fi de la maison, un tap sur « Téléphone seul » → popup → un tap sur `Bebop2-087996` → `Discovery OK` 56 ms plus tard, batterie 79 %, vidéo 864x480 `drop=0`.
+
+### Échecs lisibles
+- Chaque étape de la séquence SC2 a un délai maximum de 12 s. Sans lui, une manette muette laissait tourner un spinner sans fin, indiscernable d'une app plantée.
+- Messages distincts par étape : « SC2 non détecté — vérifier le câble USB », « SC2 muet — pas de réponse au handshake », « Aucun appareil annoncé par le SC2 », « SC2 OK mais drone injoignable — LED verte sur la manette ? ».
+- L'écran debug n'affiche plus les lignes USB/SC2 en mode téléphone seul, et son bandeau de statut se base désormais sur les compteurs toutes voies confondues (il restait sur « en attente de données » avec la vidéo en train de tourner).
+
+### Boutons de l'overlay redevenus cliquables
+- Les zones de joystick couvrent la moitié basse de l'écran et sont dessinées **après** l'overlay de connexion : elles avalaient les taps destinés à `RÉESSAYER`. Le bouton était inutilisable depuis son ajout.
+- Les joysticks ne sont plus rendus tant qu'on n'est pas connecté — sans drone ils ne servent à rien.
+
+### Manette SC2 réparée (matériel)
+- Le nettoyage des composants Wi-Fi du SC2 a rétabli la liaison manette ↔ drone, en panne depuis la session 9 (oxydation des patchs antenne, LED orange perpétuelle). La voie AOA reste **à re-tester de bout en bout** : elle n'a plus été exercée depuis.
+
 ## 2026-08-04 (session 10)
 
 ### BATTERIE DRONE — enfin affichée (90 % → 87 % en direct)

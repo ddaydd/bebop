@@ -44,6 +44,11 @@ import androidx.compose.material3.Slider
 
 @Composable
 fun MainScreen(vm: DroneViewModel = viewModel()) {
+    val mode by vm.flightMode.collectAsStateWithLifecycle()
+    if (mode == null) {
+        ModeScreen(vm)
+        return
+    }
     val pagerState = androidx.compose.foundation.pager.rememberPagerState(
         initialPage = 0,
         pageCount = { 2 },
@@ -63,15 +68,20 @@ fun MainScreen(vm: DroneViewModel = viewModel()) {
 private fun DebugScreen(vm: DroneViewModel) {
     val aoaState by vm.aoaState.collectAsStateWithLifecycle()
     val autoStatus by vm.autoStatus.collectAsStateWithLifecycle()
+    val mode by vm.flightMode.collectAsStateWithLifecycle()
     val isOpen = aoaState is io.dayd.bebop.aoa.AoaState.Open
     val dmState by vm.dmConnectionState.collectAsStateWithLifecycle()
     val connResp by vm.aoaConnResp.collectAsStateWithLifecycle()
-    val videoFrames by vm.aoaVideoFrames.collectAsStateWithLifecycle()
-    val droneBattery by vm.droneBatteryPercent.collectAsStateWithLifecycle()
+    // Compteurs toutes voies confondues : les compteurs AOA restent à zéro en
+    // mode téléphone seul, et la carte affichait « en attente » avec la vidéo
+    // en train de tourner.
+    val videoFrames by vm.anyVideoFrames.collectAsStateWithLifecycle()
+    val droneBattery by vm.anyDroneBattery.collectAsStateWithLifecycle()
     val sc2Battery by vm.sc2BatteryPercent.collectAsStateWithLifecycle()
     val arCmdStats by vm.arCmdStats.collectAsStateWithLifecycle()
+    val directConnected by vm.directConnected.collectAsStateWithLifecycle()
 
-    val droneLinked = videoFrames > 0 || droneBattery != null ||
+    val droneLinked = videoFrames > 0 || droneBattery != null || directConnected ||
         arCmdStats.keys.any { it.first == io.dayd.bebop.arsdk.ArsdkIds.PRJ_ARDRONE3 }
 
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
@@ -101,6 +111,8 @@ private fun DebugScreen(vm: DroneViewModel) {
                 onAutoConnect = vm::aoaAutoConnect,
                 onOpenAoa = vm::aoaConnect,
                 isOpen = isOpen,
+                mode = mode,
+                onLeaveMode = vm::leaveMode,
             )
 
             // --- Connexion directe Wi-Fi au drone ---
@@ -132,6 +144,8 @@ private fun StatusCard(
     onAutoConnect: () -> Unit,
     onOpenAoa: () -> Unit,
     isOpen: Boolean,
+    mode: FlightMode?,
+    onLeaveMode: () -> Unit,
 ) {
     val aoaLabel = when (aoaState) {
         io.dayd.bebop.aoa.AoaState.Disconnected -> "USB non connecté"
@@ -150,33 +164,51 @@ private fun StatusCard(
     }
 
     val dmConnected = dmState?.state == 3
-    val globalOk = isOpen && connRespOk && droneLinked
+    val phoneMode = mode == FlightMode.Phone
+    val globalOk = if (phoneMode) droneLinked else isOpen && connRespOk && droneLinked
     val globalColor = when {
         globalOk -> Color(0xFF1B5E20)
-        isOpen -> Color(0xFFEF6C00)
+        phoneMode || isOpen -> Color(0xFFEF6C00)
         else -> MaterialTheme.colorScheme.error
     }
+    // Les libellés SC2 n'ont aucun sens en mode téléphone seul : afficher
+    // « brancher le SC2 » à quelqu'un qui a choisi de voler sans manette
+    // enverrait chercher une panne qui n'existe pas.
     val globalText = when {
+        phoneMode && droneLinked -> "Téléphone ↔ Drone OK — vidéo $videoFrames frames"
+        phoneMode -> "Téléphone seul — $autoStatus"
         !isOpen -> "Brancher le SC2 au Pixel"
         !connRespOk -> "SC2 détecté — connexion MUX en cours…"
         droneLinked -> "Tout OK — vidéo $videoFrames frames"
         !dmConnected -> "Phone ↔ SC2 OK — drone non trouvé en Wi-Fi"
         else -> "Phone ↔ SC2 ↔ Drone OK — en attente de données"
     }
+    val modeLabel = when (mode) {
+        FlightMode.Sc2 -> "Manette SC2"
+        FlightMode.Phone -> "Téléphone seul"
+        null -> "—"
+    }
 
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(globalText, style = MaterialTheme.typography.titleMedium, color = globalColor)
-            Text("USB : $aoaLabel", style = MaterialTheme.typography.bodySmall)
-            Text("Drone Wi-Fi : $dmLabel${dmState?.name?.let { " ($it)" } ?: ""}", style = MaterialTheme.typography.bodySmall)
+            Text("Mode : $modeLabel", style = MaterialTheme.typography.bodySmall)
+            if (!phoneMode) {
+                Text("USB : $aoaLabel", style = MaterialTheme.typography.bodySmall)
+                Text(
+                    "Drone Wi-Fi : $dmLabel${dmState?.name?.let { " ($it)" } ?: ""}",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
             Text("Statut : $autoStatus", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (!isOpen) {
+                if (!phoneMode && !isOpen) {
                     Button(onClick = onOpenAoa) { Text("Ouvrir USB") }
                 } else {
-                    Button(onClick = onAutoConnect) { Text("Auto-connect") }
+                    Button(onClick = onAutoConnect) { Text("Reconnecter") }
                 }
+                OutlinedButton(onClick = onLeaveMode) { Text("Changer de mode") }
             }
         }
     }
