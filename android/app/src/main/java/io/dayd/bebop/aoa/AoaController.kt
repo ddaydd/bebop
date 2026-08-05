@@ -885,8 +885,21 @@ class AoaController(private val appContext: Context) {
                 _videoV1LastHead.value = frame.body.copyOfRange(0, t).joinToString(" ") { "%02x".format(it) }
             }
             if (frame.dataType == ArsdkTransport.DATA_TYPE_WITHACK) {
+                // Le numéro acquitté va dans le PAYLOAD, pas dans l'en-tête :
+                // l'en-tête porte le compteur propre au buffer d'ACK, comme
+                // pour n'importe quelle trame émise. Avec un payload vide, le
+                // SC2 ne reconnaît pas l'acquittement et attend son timeout
+                // avant chaque message suivant — les états du drone arrivaient
+                // au rythme d'un toutes les 900 ms (contre 3 ms en direct), et
+                // la rafale d'AllStates était perdue en quasi-totalité, dont la
+                // batterie. C'est le format déjà utilisé côté Wi-Fi direct.
                 val ackBuf = frame.bufferId or ArsdkTransport.BUFFER_ID_ACKOFF
-                val ack = ArsdkTransport.encode(ArsdkTransport.DATA_TYPE_ACK, ackBuf, frame.seq, ByteArray(0))
+                val ack = ArsdkTransport.encode(
+                    ArsdkTransport.DATA_TYPE_ACK,
+                    ackBuf,
+                    nextSeq(ackBuf),
+                    byteArrayOf(frame.seq.toByte()),
+                )
                 scope.launch { sendPomp(chanid = 1, payload = ack) }
             }
             if (frame.dataType == ArsdkTransport.DATA_TYPE_ACK) continue

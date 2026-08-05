@@ -17,7 +17,19 @@
 - Wi-Fi éteint : l'app ne peut plus le rallumer (Android 10+), elle le dit et ouvre le panneau système.
 - **Validé terrain** : depuis le Wi-Fi de la maison, un tap sur « Téléphone seul » → popup → un tap sur `Bebop2-087996` → `Discovery OK` 56 ms plus tard, batterie 79 %, vidéo 864x480 `drop=0`.
 
-### Batterie du drone en mode manette
+### Batterie du drone en mode manette — cause réelle : les ACK du canal SC2
+- Symptôme : en mode SC2, seul le pourcentage de la manette s'affichait.
+- **L'acquittement des trames `WITHACK` était malformé sur la voie AOA** : le numéro de séquence acquitté était placé dans l'en-tête, avec un payload vide, au lieu d'être dans le **payload** (l'en-tête portant le compteur propre au buffer d'ACK). Le SC2 n'y reconnaissait pas l'acquittement et attendait son timeout avant chaque message suivant.
+- Mesuré sur les traces du 2026-08-05, mêmes états `SettingsState` dans les deux modes : **3 ms** entre deux messages en Wi-Fi direct, **903 ms** via le SC2. La rafale d'`AllStates` fait des dizaines de messages — à ce rythme elle était perdue en quasi-totalité, dont `BatteryStateChanged`.
+- Le format correct était déjà implémenté côté Wi-Fi direct (`DirectController.kt:665`) ; `AoaController` s'aligne dessus.
+- Ce défaut ralentissait **tout** le canal d2c WITHACK du mode manette, pas seulement la batterie.
+
+#### Fausses pistes écartées en chemin (vérifiées, pas supposées)
+- « Le SC2 filtre `AllStates` » : non. `AllStates (0,4,0)` est bien relayé, et le tuple est correct — en Wi-Fi direct la batterie arrive **121 ms** après son envoi, suivie de toute la rafale d'états.
+- « C'est la manette qui répond à la place du drone » : non. Le dump des arguments montre le nom `Bebop2-087996`, le serial `PI040384AG7C087996` et le firmware `4.7.1 / HW_03` — c'est bien le drone.
+- « Les batteries observées n'étaient que des pushes spontanés sur changement de pourcentage » : non, l'écart de 121 ms le réfute.
+
+#### Envoi au bon moment (nécessaire mais pas suffisant)
 - Symptôme : en mode SC2, seul le pourcentage de la manette s'affichait.
 - Cause : `AllStates COMMON (0,4,0)` était envoyé juste après le `CONN_RESP`, alors que le SC2 est encore en `searching`. Les traces du 2026-08-05 montrent l'envoi à 16:27:07 et le premier octet venu du drone à **16:28:17** — 70 s plus tard. La demande partait dans le vide, et le drone n'envoie `BatteryStateChanged (0,5,1)` que lorsque le pourcentage change : au sol, batterie stable, il ne l'envoie donc jamais.
 - Correctif : `AoaController.onDroneLinkConfirmed()` joue la séquence d'init (`CurrentDate`, `CurrentTime`, `AllSettings`, `AllStates`) **au moment où le drone se manifeste** — première ARCommand `prj=1` reçue, ou `drone_manager` qui passe à `connected`. Rejouée si le drone décroche puis revient.
