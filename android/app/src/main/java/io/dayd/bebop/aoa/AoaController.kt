@@ -504,6 +504,17 @@ class AoaController(private val appContext: Context) {
         kotlinx.coroutines.delay(500)
         val ok = sendAllStates(ArsdkIds.PRJ_COMMON)
         Log.i(TAG, "séquence d'init drone envoyée (date=$dateStr AllStates=$ok)")
+
+        // Relances espacées tant que la batterie drone n'est pas connue : le
+        // drone peut n'être pas encore prêt à répondre au moment où le SC2
+        // annonce la liaison. AllStates est idempotent, le rejouer ne coûte
+        // rien ; on s'arrête dès qu'un pourcentage arrive.
+        for (delayMs in longArrayOf(3_000, 8_000, 20_000)) {
+            kotlinx.coroutines.delay(delayMs)
+            if (_droneBatteryPercent.value != null) return
+            val retry = sendAllStates(ArsdkIds.PRJ_COMMON)
+            Log.i(TAG, "AllStates drone rejoué après ${delayMs}ms (envoyé=$retry, batterie toujours inconnue)")
+        }
     }
 
     /**
@@ -885,6 +896,17 @@ class AoaController(private val appContext: Context) {
         }
     }
 
+    /** Args en hex + en texte lisible, pour identifier l'émetteur d'un state. */
+    private fun dumpArgs(args: ByteArray, max: Int = 32): String {
+        val shown = args.copyOfRange(0, args.size.coerceAtMost(max))
+        val hex = shown.joinToString(" ") { "%02x".format(it) }
+        val txt = shown.map { b ->
+            val c = (b.toInt() and 0xff).toChar()
+            if (c.code in 32..126) c else '.'
+        }.joinToString("")
+        return "hex=[$hex${if (args.size > max) " …" else ""}] txt=\"$txt\""
+    }
+
     private fun parseArCommand(body: ByteArray) {
         if (body.size < 4) return
         val prj = body[0].toInt() and 0xff
@@ -896,6 +918,13 @@ class AoaController(private val appContext: Context) {
         val prevCount = _arCmdStats.value[tuple] ?: 0L
         _arCmdStats.update { map -> map + (tuple to (prevCount + 1L)) }
         if (prevCount == 0L) Log.d(TAG, "ARCmd nouveau tuple: prj=$prj cls=$cls cmd=$cmd args=${args.size}B")
+        // Sur le lien SC2, le projet `common` a DEUX émetteurs possibles : le
+        // drone et la manette, qui l'implémente aussi. Impossible de savoir
+        // lequel répond sans regarder la charge utile — le firmware et le
+        // serial du drone sont connus, ceux du SC2 non.
+        if (prevCount == 0L && (prj == ArsdkIds.PRJ_COMMON || prj == ArsdkIds.PRJ_SKYCTRL || prj == 137)) {
+            Log.i(TAG, "ARCmd ($prj,$cls,$cmd) ${args.size}B ${dumpArgs(args)}")
+        }
         if (prj == 1 && prevCount == 0L) Log.i(TAG, "première ARCmd ardrone3: cls=$cls cmd=$cmd — lien drone confirmé")
         // Le premier octet venu du drone (prj=1) est la preuve la plus directe
         // qu'il est joignable — plus fiable que l'état annoncé par le SC2.
