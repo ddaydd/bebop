@@ -324,9 +324,12 @@ class DroneViewModel(app: Application) : AndroidViewModel(app) {
 
         _autoStatus.value = "Ouverture flux vidéo…"
         kotlinx.coroutines.delay(300)
+        // Seulement les états du SC2 ici : lui est joignable immédiatement.
+        // Les états du drone sont demandés par AoaController quand le drone se
+        // manifeste vraiment — la manette peut mettre plus d'une minute à
+        // l'accrocher, et une demande envoyée avant part dans le vide.
         val sc2ok = aoaController.sendAllStates(io.dayd.bebop.arsdk.ArsdkIds.PRJ_SKYCTRL)
-        val droneOk = aoaController.sendAllStates(io.dayd.bebop.arsdk.ArsdkIds.PRJ_COMMON)
-        Log.i(TAG, "autoConnect: AllStates SC2=$sc2ok drone=$droneOk")
+        Log.i(TAG, "autoConnect: AllStates SC2=$sc2ok")
         aoaController.sendOpenStreamChannels()
         kotlinx.coroutines.delay(200)
         aoaController.sendVideoStreamMode(0)

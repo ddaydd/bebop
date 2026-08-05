@@ -17,6 +17,14 @@
 - Wi-Fi éteint : l'app ne peut plus le rallumer (Android 10+), elle le dit et ouvre le panneau système.
 - **Validé terrain** : depuis le Wi-Fi de la maison, un tap sur « Téléphone seul » → popup → un tap sur `Bebop2-087996` → `Discovery OK` 56 ms plus tard, batterie 79 %, vidéo 864x480 `drop=0`.
 
+### Batterie du drone en mode manette
+- Symptôme : en mode SC2, seul le pourcentage de la manette s'affichait.
+- Cause : `AllStates COMMON (0,4,0)` était envoyé juste après le `CONN_RESP`, alors que le SC2 est encore en `searching`. Les traces du 2026-08-05 montrent l'envoi à 16:27:07 et le premier octet venu du drone à **16:28:17** — 70 s plus tard. La demande partait dans le vide, et le drone n'envoie `BatteryStateChanged (0,5,1)` que lorsque le pourcentage change : au sol, batterie stable, il ne l'envoie donc jamais.
+- Correctif : `AoaController.onDroneLinkConfirmed()` joue la séquence d'init (`CurrentDate`, `CurrentTime`, `AllSettings`, `AllStates`) **au moment où le drone se manifeste** — première ARCommand `prj=1` reçue, ou `drone_manager` qui passe à `connected`. Rejouée si le drone décroche puis revient.
+- `DroneViewModel.autoConnect()` ne demande plus que les états du SC2, seul joignable immédiatement.
+- `ArCommand.withString()` remonté dans `ArsdkTransport.kt` : les deux voies partagent le même encodage (il était dupliqué en privé dans `DirectController`).
+- Piège général : une ARCommand envoyée à un pair injoignable **ne produit aucune erreur**. Même famille que la régression de tuples de la session 8 — le lien reste vivant, seul le state manque.
+
 ### Échecs lisibles
 - Chaque étape de la séquence SC2 a un délai maximum de 12 s. Sans lui, une manette muette laissait tourner un spinner sans fin, indiscernable d'une app plantée.
 - Messages distincts par étape : « SC2 non détecté — vérifier le câble USB », « SC2 muet — pas de réponse au handshake », « Aucun appareil annoncé par le SC2 », « SC2 OK mais drone injoignable — LED verte sur la manette ? ».

@@ -83,6 +83,18 @@ object ArCommand {
         return buf.array()
     }
 
+    /** Encode une ARCommand à un seul argument STR (chaîne terminée par `\0`). */
+    fun withString(prj: Int, cls: Int, cmd: Int, str: String): ByteArray {
+        val strBytes = str.toByteArray(Charsets.UTF_8)
+        val buf = ByteBuffer.allocate(4 + strBytes.size + 1).order(ByteOrder.LITTLE_ENDIAN)
+        buf.put(prj.toByte())
+        buf.put(cls.toByte())
+        buf.putShort(cmd.toShort())
+        buf.put(strBytes)
+        buf.put(0)
+        return buf.array()
+    }
+
     fun videoEnable(enable: Boolean): ByteArray {
         val buf = ByteBuffer.allocate(5).order(ByteOrder.LITTLE_ENDIAN)
         buf.put(1.toByte())              // project ardrone3 = 1

@@ -321,6 +321,7 @@ class AoaController(private val appContext: Context) {
     }
 
     fun disconnect() {
+        droneInitSent = false
         stopPilotingLoop()
         stopDump()
         readerJob?.cancel()
@@ -472,6 +473,52 @@ class AoaController(private val appContext: Context) {
     )
 
     /** Demande au SC2 (ou drone) de pousser tous ses *StateChanged. */
+    /**
+     * Séquence d'init que libARController joue à chaque connexion drone :
+     * date, heure, AllSettings, puis AllStates. C'est AllStates qui fait
+     * repousser au drone sa batterie — sans quoi il ne l'envoie qu'au prochain
+     * changement de pourcentage, c'est-à-dire potentiellement jamais.
+     *
+     * Rejouée quand le drone se manifeste, et pas seulement à l'ouverture du
+     * lien USB : via le SC2, la manette peut mettre plus d'une minute à
+     * accrocher le drone. Envoyée trop tôt, la séquence part dans le vide et la
+     * batterie drone n'apparaît jamais (vécu session 11 : 70 s d'écart entre
+     * l'envoi et le premier octet venu du drone).
+     */
+    private suspend fun sendDroneInitSequence() {
+        val now = java.util.Date()
+        val dateStr = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(now)
+        val timeStr = java.text.SimpleDateFormat("'T'HHmmssZ", java.util.Locale.US).format(now)
+
+        suspend fun send(payload: ByteArray) = sendArCommand(
+            payload = payload,
+            dataType = ArsdkTransport.DATA_TYPE_WITHACK,
+            bufferId = ArsdkTransport.BUFFER_ID_C2D_CMD_WITHACK,
+        )
+
+        val (dPrj, dCls, dCmd) = ArsdkIds.COMMON_CURRENT_DATE
+        send(ArCommand.withString(dPrj, dCls, dCmd, dateStr))
+        val (tPrj, tCls, tCmd) = ArsdkIds.COMMON_CURRENT_TIME
+        send(ArCommand.withString(tPrj, tCls, tCmd, timeStr))
+        send(ArCommand.noArgs(ArsdkIds.PRJ_COMMON, 2, 0)) // AllSettings
+        kotlinx.coroutines.delay(500)
+        val ok = sendAllStates(ArsdkIds.PRJ_COMMON)
+        Log.i(TAG, "séquence d'init drone envoyée (date=$dateStr AllStates=$ok)")
+    }
+
+    /**
+     * Vrai une fois la séquence jouée pour la connexion drone courante. Remis à
+     * zéro quand le drone décroche, pour que la reconnexion la rejoue.
+     */
+    private var droneInitSent = false
+
+    /** Le drone vient de se manifester : lui redemander ses états. */
+    private fun onDroneLinkConfirmed() {
+        if (droneInitSent) return
+        droneInitSent = true
+        scope.launch { runCatching { sendDroneInitSequence() } }
+    }
+
     suspend fun sendAllStates(prj: Int = ArsdkIds.PRJ_SKYCTRL): Boolean {
         val tuple = if (prj == ArsdkIds.PRJ_SKYCTRL) ArsdkIds.SKYCTRL_ALL_STATES
             else ArsdkIds.COMMON_ALL_STATES
@@ -850,6 +897,9 @@ class AoaController(private val appContext: Context) {
         _arCmdStats.update { map -> map + (tuple to (prevCount + 1L)) }
         if (prevCount == 0L) Log.d(TAG, "ARCmd nouveau tuple: prj=$prj cls=$cls cmd=$cmd args=${args.size}B")
         if (prj == 1 && prevCount == 0L) Log.i(TAG, "première ARCmd ardrone3: cls=$cls cmd=$cmd — lien drone confirmé")
+        // Le premier octet venu du drone (prj=1) est la preuve la plus directe
+        // qu'il est joignable — plus fiable que l'état annoncé par le SC2.
+        if (prj == ArsdkIds.PRJ_ARDRONE3) onDroneLinkConfirmed()
         if (tuple == ArsdkIds.DM_CONNECTION_STATE) {
             if (args.size >= 4) {
                 val state = readU32Le(args, 0)
@@ -864,8 +914,15 @@ class AoaController(private val appContext: Context) {
                         Log.i(TAG, "drone_manager connection_state: $stateLabel serial=$serial model=$model name=${name ?: "?"}")
                     }
                     _dmConnectionState.value = DmConnectionState(state, serial, model, name ?: "")
-                    if (state == 3) _sc2DroneConnectionState.value = 2
-                    else if (state == 0 || state == 1) _sc2DroneConnectionState.value = 0
+                    if (state == 3) {
+                        _sc2DroneConnectionState.value = 2
+                        onDroneLinkConfirmed()
+                    } else if (state == 0 || state == 1) {
+                        _sc2DroneConnectionState.value = 0
+                        // Drone perdu : la prochaine connexion devra rejouer la
+                        // séquence, sinon la batterie resterait celle d'avant.
+                        droneInitSent = false
+                    }
                 }
             }
             return

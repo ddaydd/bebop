@@ -409,10 +409,10 @@ class DirectController(private val appContext: Context) {
             val dateStr = dateFmt.format(now)
             val timeStr = timeFmt.format(now)
             val (dPrj, dCls, dCmd) = ArsdkIds.COMMON_CURRENT_DATE
-            sendArCommand(arCmdWithString(dPrj, dCls, dCmd, dateStr), ArsdkTransport.DATA_TYPE_WITHACK, ArsdkTransport.BUFFER_ID_C2D_CMD_WITHACK)
+            sendArCommand(ArCommand.withString(dPrj, dCls, dCmd, dateStr), ArsdkTransport.DATA_TYPE_WITHACK, ArsdkTransport.BUFFER_ID_C2D_CMD_WITHACK)
             Log.i(TAG, "CurrentDate envoyé: $dateStr")
             val (tPrj, tCls, tCmd) = ArsdkIds.COMMON_CURRENT_TIME
-            sendArCommand(arCmdWithString(tPrj, tCls, tCmd, timeStr), ArsdkTransport.DATA_TYPE_WITHACK, ArsdkTransport.BUFFER_ID_C2D_CMD_WITHACK)
+            sendArCommand(ArCommand.withString(tPrj, tCls, tCmd, timeStr), ArsdkTransport.DATA_TYPE_WITHACK, ArsdkTransport.BUFFER_ID_C2D_CMD_WITHACK)
             Log.i(TAG, "CurrentTime envoyé: $timeStr")
 
             sendArCommand(ArCommand.noArgs(0, 2, 0), ArsdkTransport.DATA_TYPE_WITHACK, ArsdkTransport.BUFFER_ID_C2D_CMD_WITHACK)
@@ -538,17 +538,6 @@ class DirectController(private val appContext: Context) {
             val frame = ArsdkTransport.encode(dataType, bufferId, seq, payload)
             sendDirect(frame)
         }
-
-    private fun arCmdWithString(prj: Int, cls: Int, cmd: Int, str: String): ByteArray {
-        val strBytes = str.toByteArray(Charsets.UTF_8)
-        val buf = java.nio.ByteBuffer.allocate(4 + strBytes.size + 1).order(java.nio.ByteOrder.LITTLE_ENDIAN)
-        buf.put(prj.toByte())
-        buf.put(cls.toByte())
-        buf.putShort(cmd.toShort())
-        buf.put(strBytes)
-        buf.put(0)
-        return buf.array()
-    }
 
     /**
      * PCMD à 25 Hz en continu, y compris sticks au neutre : sans flux le drone
