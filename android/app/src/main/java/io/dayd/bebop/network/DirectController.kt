@@ -686,6 +686,15 @@ class DirectController(private val appContext: Context) {
             _lastTuple.value = "($prj,$cls,$cmd)"
             Log.d(TAG, "ARCmd: ($prj,$cls,$cmd) args=${args.size}B  [type=${frame.dataType} buf=${frame.bufferId}]")
 
+            // Trace explicite des states `common` : c'est la seule façon de
+            // savoir si `AllStates` produit vraiment quelque chose, ou si les
+            // batteries observées jusqu'ici n'étaient que des pushes spontanés
+            // du drone sur changement de pourcentage.
+            if (prj == ArsdkIds.PRJ_COMMON) {
+                Log.i(TAG, "state common ($prj,$cls,$cmd) ${args.size}B" +
+                    if (cls == 5 && cmd == 0) "  ← AllStatesChanged" else "")
+            }
+
             if (Triple(prj, cls, cmd) == ArsdkIds.COMMON_BATTERY && args.isNotEmpty()) {
                 val pct = args[0].toInt() and 0xff
                 Log.i(TAG, "Batterie drone (direct): $pct%")
