@@ -226,6 +226,29 @@ object ArCommand {
     }
 }
 
+/**
+ * Réglage de performance tel que le drone l'annonce : les `*SettingsState`
+ * portent **3 floats** (courant, min, max). Les bornes viennent donc du drone,
+ * jamais d'une constante en dur — et elles sont identiques quelle que soit la
+ * voie (Wi-Fi direct ou SC2), puisque c'est le même drone qui répond.
+ */
+data class PerfSetting(val current: Float, val min: Float, val max: Float) {
+    /** Vrai si le drone tourne bien en dessous de ce qu'il sait faire. */
+    val throttled: Boolean get() = max > min && current < max * 0.95f
+
+    /** Valeur cible à une fraction de la plage annoncée (0 = min, 1 = max). */
+    fun at(fraction: Float): Float = min + (max - min) * fraction.coerceIn(0f, 1f)
+
+    companion object {
+        /** Décode les 3 floats LE d'un `*SettingsState` ; null si trop court. */
+        fun parse(args: ByteArray): PerfSetting? {
+            if (args.size < 12) return null
+            fun f(off: Int) = ByteBuffer.wrap(args, off, 4).order(ByteOrder.LITTLE_ENDIAN).float
+            return PerfSetting(f(0), f(4), f(8))
+        }
+    }
+}
+
 /** En-tête ARCommand + arguments bruts (encodés selon la signature de la commande). */
 data class ArCommandHeader(
     val prj: Int,
@@ -320,6 +343,13 @@ object ArsdkIds {
     val DM_CONNECTION_STATE = Triple(137, 0, 5)    // evt: state(u32 enum) + serial(str) + model(u16) + name(str)
     val DM_AUTH_FAILED = Triple(137, 0, 6)         // evt: serial(str) + model(u16) + name(str)
     val DM_KNOWN_DRONE_ITEM = Triple(137, 0, 8)   // evt: serial(str) + model(u16) + name(str) + security(u32) + has_saved_key(u8) + list_flags(u8)
+
+    // Réglages de performance annoncés par le drone — 3 floats (courant, min, max).
+    // ardrone3.SpeedSettingsState (cls=12) et PilotingSettingsState (cls=6).
+    // Repoussés par common.Settings.AllSettings (0,2,0), sur les deux voies.
+    val ARDRONE3_MAX_VERTICAL_SPEED = Triple(1, 12, 0)
+    val ARDRONE3_MAX_ROTATION_SPEED = Triple(1, 12, 1)
+    val ARDRONE3_MAX_TILT = Triple(1, 6, 1)
 
     // skyctrl.Wifi (prj=4 cls=1) — commandes Wi-Fi du SC2
     val SKYCTRL_WIFI_REQUEST_LIST = Triple(4, 1, 0)

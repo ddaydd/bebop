@@ -69,9 +69,6 @@ class DroneViewModel(app: Application) : AndroidViewModel(app) {
     val directVideoFrames: StateFlow<Long> = directController.videoFrames
     val directRtpStats: StateFlow<Triple<Long, Long, Long>> = directController.rtpStats
     val directVideoPath: StateFlow<String?> = directController.videoPath
-    val directMaxRotationSpeed = directController.maxRotationSpeed
-    val directMaxVerticalSpeed = directController.maxVerticalSpeed
-    val directMaxTilt = directController.maxTilt
     val directAlertState: StateFlow<Int> = directController.alertState
     val directLinkLost: StateFlow<Boolean> = directController.linkLost
     val directGpsFix: StateFlow<Boolean> = directController.gpsFix
@@ -83,8 +80,6 @@ class DroneViewModel(app: Application) : AndroidViewModel(app) {
         if (useDirect()) directController.sendNavigateHome(start)
     }
 
-    fun directPerfModerate() = directController.applyPerformance(0.5f)
-    fun directPerfMax() = directController.applyPerformance(1f)
     fun directStartVideo() { directController.startVideo() }
     fun directStopVideo() { directController.stopVideo() }
     val directLastPacketAt: StateFlow<Long> = directController.lastPacketAt
@@ -128,6 +123,35 @@ class DroneViewModel(app: Application) : AndroidViewModel(app) {
         combine(directController.videoFrames, aoaController.videoFrameCount) { direct, aoa ->
             if (direct > 0) direct else aoa
         }.stateIn(viewModelScope, SharingStarted.Eagerly, 0L)
+    /**
+     * Limites de performance du drone, quelle que soit la voie. Même règle que
+     * la batterie : le Wi-Fi direct prime quand il est actif. Les bornes sont
+     * celles annoncées par le drone — d'usine ce Bebop tourne à 13 °/s pour un
+     * maximum de 200, ce qui passe pour un défaut de pilotage.
+     */
+    private fun <T> anyOf(direct: StateFlow<T?>, aoa: StateFlow<T?>): StateFlow<T?> =
+        combine(direct, aoa) { d, a -> d ?: a }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    val anyMaxRotationSpeed = anyOf(directController.maxRotationSpeed, aoaController.maxRotationSpeed)
+    val anyMaxVerticalSpeed = anyOf(directController.maxVerticalSpeed, aoaController.maxVerticalSpeed)
+    val anyMaxTilt = anyOf(directController.maxTilt, aoaController.maxTilt)
+
+    /** Applique un préréglage de performance sur la voie active. */
+    private fun applyPerformance(fraction: Float) {
+        if (useDirect()) directController.applyPerformance(fraction)
+        else viewModelScope.launch { aoaController.applyPerformance(fraction) }
+    }
+
+    fun perfModerate() = applyPerformance(0.5f)
+    fun perfMax() = applyPerformance(1f)
+
+    /** Redemande au drone ses réglages (les bornes de performance avec). */
+    fun requestPerfSettings() {
+        if (useDirect()) directController.requestAllSettings()
+        else viewModelScope.launch { aoaController.sendAllSettings() }
+    }
+
     val arCmdStats: StateFlow<Map<Triple<Int, Int, Int>, Long>> = aoaController.arCmdStats
     val arCmdLast: StateFlow<io.dayd.bebop.arsdk.ArCommandHeader?> = aoaController.arCmdLast
     val transportStats: StateFlow<Map<Pair<Int, Int>, Long>> = aoaController.transportStats

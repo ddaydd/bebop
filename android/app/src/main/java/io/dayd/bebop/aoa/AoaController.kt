@@ -34,6 +34,7 @@ import io.dayd.bebop.arsdk.ArsdkIds
 import io.dayd.bebop.arsdk.ArStreamAck
 import io.dayd.bebop.arsdk.ArStreamReader
 import io.dayd.bebop.arsdk.ArsdkTransport
+import io.dayd.bebop.arsdk.PerfSetting
 import io.dayd.bebop.video.RtpDepayloader
 import kotlinx.coroutines.delay
 import java.util.concurrent.ConcurrentHashMap
@@ -163,6 +164,18 @@ class AoaController(private val appContext: Context) {
     // ardrone3.MediaStreamingState.VideoStreamModeChanged enum (0=low_latency, 1=high_reliability…).
     private val _videoStreamMode = MutableStateFlow<Int?>(null)
     val videoStreamMode: StateFlow<Int?> = _videoStreamMode.asStateFlow()
+
+    // Réglages de performance du drone, relayés par le SC2 comme n'importe
+    // quelle autre ARCommand ardrone3. Repoussés par la séquence d'init
+    // (AllSettings), donc disponibles dès que le drone est accroché.
+    private val _maxRotationSpeed = MutableStateFlow<PerfSetting?>(null)
+    val maxRotationSpeed: StateFlow<PerfSetting?> = _maxRotationSpeed.asStateFlow()
+
+    private val _maxVerticalSpeed = MutableStateFlow<PerfSetting?>(null)
+    val maxVerticalSpeed: StateFlow<PerfSetting?> = _maxVerticalSpeed.asStateFlow()
+
+    private val _maxTilt = MutableStateFlow<PerfSetting?>(null)
+    val maxTilt: StateFlow<PerfSetting?> = _maxTilt.asStateFlow()
 
     private val _arCmdStats = MutableStateFlow<Map<Triple<Int, Int, Int>, Long>>(emptyMap())
     val arCmdStats: StateFlow<Map<Triple<Int, Int, Int>, Long>> = _arCmdStats.asStateFlow()
@@ -500,7 +513,7 @@ class AoaController(private val appContext: Context) {
         send(ArCommand.withString(dPrj, dCls, dCmd, dateStr))
         val (tPrj, tCls, tCmd) = ArsdkIds.COMMON_CURRENT_TIME
         send(ArCommand.withString(tPrj, tCls, tCmd, timeStr))
-        send(ArCommand.noArgs(ArsdkIds.PRJ_COMMON, 2, 0)) // AllSettings
+        sendAllSettings() // fait repousser les *SettingsState, dont les limites de perf
         kotlinx.coroutines.delay(500)
         val ok = sendAllStates(ArsdkIds.PRJ_COMMON)
         Log.i(TAG, "séquence d'init drone envoyée (date=$dateStr AllStates=$ok)")
@@ -564,6 +577,52 @@ class AoaController(private val appContext: Context) {
         dataType = ArsdkTransport.DATA_TYPE_WITHACK,
         bufferId = ArsdkTransport.BUFFER_ID_C2D_CMD_WITHACK,
     )
+
+    /**
+     * common.Settings.AllSettings (0,2,0) — fait repousser au drone tous ses
+     * *SettingsState, dont les limites de performance. Déjà joué par la
+     * séquence d'init ; exposé pour rattraper le cas où le drone s'est
+     * accroché après elle.
+     */
+    suspend fun sendAllSettings(): Boolean = sendArCommand(
+        payload = ArCommand.noArgs(ArsdkIds.PRJ_COMMON, 2, 0),
+        dataType = ArsdkTransport.DATA_TYPE_WITHACK,
+        bufferId = ArsdkTransport.BUFFER_ID_C2D_CMD_WITHACK,
+    )
+
+    /**
+     * Règle les performances à une fraction de la plage annoncée par le drone
+     * (0 = minimum, 1 = maximum), exactement comme sur la voie Wi-Fi directe :
+     * les commandes de réglage sont des ARCommands ardrone3 ordinaires, que le
+     * SC2 relaie au drone (contrairement aux `prj=4`, qu'il garde pour lui).
+     *
+     * Ne fait rien tant que le drone n'a pas annoncé ses bornes : les valeurs
+     * ne sont jamais devinées, et envoyer un réglage au hasard sur une voie où
+     * l'erreur est silencieuse ne se verrait pas.
+     */
+    suspend fun applyPerformance(fraction: Float): Boolean {
+        var sent = false
+        suspend fun push(payload: ByteArray, label: String) {
+            val ok = sendArCommand(
+                payload = payload,
+                dataType = ArsdkTransport.DATA_TYPE_WITHACK,
+                bufferId = ArsdkTransport.BUFFER_ID_C2D_CMD_WITHACK,
+            )
+            Log.i(TAG, "perf SC2: $label (envoyé=$ok)")
+            sent = sent || ok
+        }
+        _maxRotationSpeed.value?.at(fraction)?.let {
+            push(ArCommand.maxRotationSpeed(it), "MaxRotationSpeed($it °/s)")
+        }
+        _maxVerticalSpeed.value?.at(fraction)?.let {
+            push(ArCommand.maxVerticalSpeed(it), "MaxVerticalSpeed($it m/s)")
+        }
+        _maxTilt.value?.at(fraction)?.let {
+            push(ArCommand.maxTilt(it), "MaxTilt($it °)")
+        }
+        if (!sent) Log.w(TAG, "perf SC2 ignorée : bornes du drone pas encore reçues")
+        return sent
+    }
 
     suspend fun sendDmDiscoverDrones(): Boolean {
         Log.i(TAG, "C2D: dm_discover_drones (137,0,1)")
@@ -1022,6 +1081,19 @@ class AoaController(private val appContext: Context) {
                     Log.i(TAG, "batterie SC2: $pct%")
                     _sc2BatteryPercent.value = pct
                 }
+            }
+            // Réglages de perf annoncés par le drone (courant, min, max).
+            ArsdkIds.ARDRONE3_MAX_VERTICAL_SPEED -> PerfSetting.parse(args)?.let {
+                _maxVerticalSpeed.value = it
+                Log.i(TAG, "MaxVerticalSpeed: ${it.current} m/s (min ${it.min}, max ${it.max})")
+            }
+            ArsdkIds.ARDRONE3_MAX_ROTATION_SPEED -> PerfSetting.parse(args)?.let {
+                _maxRotationSpeed.value = it
+                Log.i(TAG, "MaxRotationSpeed: ${it.current} °/s (min ${it.min}, max ${it.max})")
+            }
+            ArsdkIds.ARDRONE3_MAX_TILT -> PerfSetting.parse(args)?.let {
+                _maxTilt.value = it
+                Log.i(TAG, "MaxTilt: ${it.current}° (min ${it.min}, max ${it.max})")
             }
             ArsdkIds.ARDRONE3_VIDEO_RECORD_STATE ->
                 if (args.size >= 4) _videoRecordState.value = readU32Le(args, 0)

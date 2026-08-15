@@ -1,5 +1,16 @@
 # Release Notes
 
+## 2026-08-15 (session 12)
+
+### Les réglages de performance marchent aussi en mode manette
+- Les préréglages **Modéré** / **Max** n'existaient que sur la voie Wi-Fi directe : en mode SC2, le drone restait à ses réglages « débutant » d'usine (13 °/s de rotation pour un maximum de 200 — un tour sur soi-même en 28 s), sans aucun moyen de les changer depuis l'app.
+- Rien de spécifique au SC2 n'était en cause : les commandes de réglage sont des ARCommands `ardrone3` ordinaires, que la manette **relaie** au drone (contrairement aux `prj=4 skyctrl`, qu'elle garde pour elle). Il manquait seulement le parsing des `*SettingsState` et les envois côté `AoaController`.
+- Le type `PerfSetting` (courant, min, max + `throttled` + `at(fraction)`) et les tuples `(1,12,0)`, `(1,12,1)`, `(1,6,1)` remontent dans `arsdk/ArsdkTransport.kt` : les deux voies décodent les mêmes 3 floats avec le même code, et les bornes restent celles annoncées par le drone — jamais une constante en dur.
+- `common.Settings.AllSettings (0,2,0)`, qui fait repousser ces bornes, était envoyé en dur aux deux endroits : extrait en `sendAllSettings()` de chaque côté. Sur la voie SC2 il fait déjà partie de la séquence d'init jouée quand le drone s'accroche.
+- **Card « Performances du drone » à part, visible dans les deux modes** (elle était enfermée dans la carte « connexion directe »). `DroneViewModel` combine les deux voies comme pour la batterie — le direct prime quand il est actif — et `perfModerate()` / `perfMax()` dispatchent vers la voie en service.
+- Boutons **désactivés tant que le drone n'a pas annoncé ses bornes**, avec le libellé « Limites inconnues ». Sans bornes il n'y a rien à interpoler, et la commande partirait dans le vide — sur cette voie, une ARCommand envoyée à un pair injoignable ne produit aucune erreur. Bouton **Relire** pour rejouer `AllSettings` si le drone s'est accroché après la séquence d'init.
+- **Pas encore testé sur le matériel** : l'app compile, la voie SC2 n'a pas été exercée depuis la réparation Wi-Fi de la manette. À vérifier au prochain vol : les trois valeurs doivent s'afficher en mode manette, puis passer à 105 °/s / 20° / 3,25 m/s après un tap sur « Modéré ».
+
 ## 2026-08-05 (session 11)
 
 ### Le mode de vol est choisi au lancement, plus deviné

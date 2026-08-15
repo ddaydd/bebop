@@ -10,6 +10,7 @@ import io.dayd.bebop.arsdk.ArStreamAck
 import io.dayd.bebop.arsdk.ArStreamReader
 import io.dayd.bebop.arsdk.ArsdkIds
 import io.dayd.bebop.arsdk.ArsdkTransport
+import io.dayd.bebop.arsdk.PerfSetting
 import io.dayd.bebop.video.RtpDepayloader
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -73,30 +74,15 @@ class DirectController(private val appContext: Context) {
     private val _lastTuple = MutableStateFlow<String?>(null)
     val lastTuple: StateFlow<String?> = _lastTuple.asStateFlow()
 
-    /**
-     * Réglage de performance annoncé par le drone : valeur courante et bornes.
-     * Les *SettingsState renvoient 3 floats (current, min, max).
-     */
-    data class Setting(val current: Float, val min: Float, val max: Float) {
-        /** Vrai si le drone tourne bien en dessous de ce qu'il sait faire. */
-        val throttled: Boolean get() = max > min && current < max * 0.95f
-    }
+    // Réglages de performance annoncés par le drone (cf. PerfSetting).
+    private val _maxRotationSpeed = MutableStateFlow<PerfSetting?>(null)
+    val maxRotationSpeed: StateFlow<PerfSetting?> = _maxRotationSpeed.asStateFlow()
 
-    private val _maxRotationSpeed = MutableStateFlow<Setting?>(null)
-    val maxRotationSpeed: StateFlow<Setting?> = _maxRotationSpeed.asStateFlow()
+    private val _maxVerticalSpeed = MutableStateFlow<PerfSetting?>(null)
+    val maxVerticalSpeed: StateFlow<PerfSetting?> = _maxVerticalSpeed.asStateFlow()
 
-    private val _maxVerticalSpeed = MutableStateFlow<Setting?>(null)
-    val maxVerticalSpeed: StateFlow<Setting?> = _maxVerticalSpeed.asStateFlow()
-
-    private val _maxTilt = MutableStateFlow<Setting?>(null)
-    val maxTilt: StateFlow<Setting?> = _maxTilt.asStateFlow()
-
-    private fun readFloatLe(buf: ByteArray, off: Int): Float =
-        java.lang.Float.intBitsToFloat(readU32Le(buf, off))
-
-    private fun readSetting(args: ByteArray): Setting? =
-        if (args.size < 12) null
-        else Setting(readFloatLe(args, 0), readFloatLe(args, 4), readFloatLe(args, 8))
+    private val _maxTilt = MutableStateFlow<PerfSetting?>(null)
+    val maxTilt: StateFlow<PerfSetting?> = _maxTilt.asStateFlow()
 
     /**
      * Règle les performances à une fraction de la plage annoncée par le drone
@@ -105,19 +91,14 @@ class DirectController(private val appContext: Context) {
      * directement à 200 rend l'appareil difficile à tenir.
      */
     fun applyPerformance(fraction: Float) {
-        val f = fraction.coerceIn(0f, 1f)
-        fun target(s: Setting) = s.min + (s.max - s.min) * f
-        _maxRotationSpeed.value?.let {
-            val v = target(it)
-            sendFlightCommand(ArCommand.maxRotationSpeed(v), "MaxRotationSpeed($v °/s)")
+        _maxRotationSpeed.value?.at(fraction)?.let {
+            sendFlightCommand(ArCommand.maxRotationSpeed(it), "MaxRotationSpeed($it °/s)")
         }
-        _maxVerticalSpeed.value?.let {
-            val v = target(it)
-            sendFlightCommand(ArCommand.maxVerticalSpeed(v), "MaxVerticalSpeed($v m/s)")
+        _maxVerticalSpeed.value?.at(fraction)?.let {
+            sendFlightCommand(ArCommand.maxVerticalSpeed(it), "MaxVerticalSpeed($it m/s)")
         }
-        _maxTilt.value?.let {
-            val v = target(it)
-            sendFlightCommand(ArCommand.maxTilt(v), "MaxTilt($v °)")
+        _maxTilt.value?.at(fraction)?.let {
+            sendFlightCommand(ArCommand.maxTilt(it), "MaxTilt($it °)")
         }
     }
 
@@ -415,8 +396,7 @@ class DirectController(private val appContext: Context) {
             sendArCommand(ArCommand.withString(tPrj, tCls, tCmd, timeStr), ArsdkTransport.DATA_TYPE_WITHACK, ArsdkTransport.BUFFER_ID_C2D_CMD_WITHACK)
             Log.i(TAG, "CurrentTime envoyé: $timeStr")
 
-            sendArCommand(ArCommand.noArgs(0, 2, 0), ArsdkTransport.DATA_TYPE_WITHACK, ArsdkTransport.BUFFER_ID_C2D_CMD_WITHACK)
-            Log.i(TAG, "AllSettings (0,2,0) envoyé")
+            sendAllSettings()
             kotlinx.coroutines.delay(500)
             requestAllStates()
             startVideo()
@@ -425,6 +405,24 @@ class DirectController(private val appContext: Context) {
             _droneStatus.value = "Erreur : ${e.message}"
             _connected.value = false
         }
+    }
+
+    /**
+     * common.Settings.AllSettings (0,2,0) — fait repousser au drone tous ses
+     * *SettingsState, dont les limites de performance.
+     */
+    private suspend fun sendAllSettings() {
+        sendArCommand(
+            ArCommand.noArgs(ArsdkIds.PRJ_COMMON, 2, 0),
+            ArsdkTransport.DATA_TYPE_WITHACK,
+            ArsdkTransport.BUFFER_ID_C2D_CMD_WITHACK,
+        )
+        Log.i(TAG, "AllSettings (0,2,0) envoyé")
+    }
+
+    /** Redemande les réglages (bornes de performance) sans rejouer la connexion. */
+    fun requestAllSettings() {
+        scope.launch { sendAllSettings() }
     }
 
     /** Re-demande au drone de repousser tous ses states (dont la batterie). */
@@ -746,18 +744,19 @@ class DirectController(private val appContext: Context) {
                 }
             }
             // Réglages de perf annoncés par le drone (current, min, max).
-            // (1,12,x) = SpeedSettingsState, (1,6,1) = PilotingSettingsState.MaxTilt
-            if (prj == 1 && cls == 12 && cmd == 0) readSetting(args)?.let {
-                _maxVerticalSpeed.value = it
-                Log.i(TAG, "MaxVerticalSpeed: ${it.current} m/s (min ${it.min}, max ${it.max})")
-            }
-            if (prj == 1 && cls == 12 && cmd == 1) readSetting(args)?.let {
-                _maxRotationSpeed.value = it
-                Log.i(TAG, "MaxRotationSpeed: ${it.current} °/s (min ${it.min}, max ${it.max})")
-            }
-            if (prj == 1 && cls == 6 && cmd == 1) readSetting(args)?.let {
-                _maxTilt.value = it
-                Log.i(TAG, "MaxTilt: ${it.current}° (min ${it.min}, max ${it.max})")
+            when (Triple(prj, cls, cmd)) {
+                ArsdkIds.ARDRONE3_MAX_VERTICAL_SPEED -> PerfSetting.parse(args)?.let {
+                    _maxVerticalSpeed.value = it
+                    Log.i(TAG, "MaxVerticalSpeed: ${it.current} m/s (min ${it.min}, max ${it.max})")
+                }
+                ArsdkIds.ARDRONE3_MAX_ROTATION_SPEED -> PerfSetting.parse(args)?.let {
+                    _maxRotationSpeed.value = it
+                    Log.i(TAG, "MaxRotationSpeed: ${it.current} °/s (min ${it.min}, max ${it.max})")
+                }
+                ArsdkIds.ARDRONE3_MAX_TILT -> PerfSetting.parse(args)?.let {
+                    _maxTilt.value = it
+                    Log.i(TAG, "MaxTilt: ${it.current}° (min ${it.min}, max ${it.max})")
+                }
             }
             if (Triple(prj, cls, cmd) == ArsdkIds.ARDRONE3_VIDEO_RECORD_STATE && args.size >= 4) {
                 _videoRecordState.value = readU32Le(args, 0)

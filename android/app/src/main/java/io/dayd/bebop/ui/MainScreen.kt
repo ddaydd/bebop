@@ -121,6 +121,9 @@ private fun DebugScreen(vm: DroneViewModel) {
             // --- Connexion SC2 ↔ Drone (drone_manager + Wi-Fi) ---
             Sc2DroneCard(vm)
 
+            // --- Limites de performance (les deux voies) ---
+            PerformanceCard(vm)
+
             // --- Vidéo ---
             VideoCard(vm)
 
@@ -296,35 +299,6 @@ private fun DirectCard(vm: DroneViewModel) {
                 )
             }
 
-            if (connected) {
-                val rot by vm.directMaxRotationSpeed.collectAsStateWithLifecycle()
-                val vert by vm.directMaxVerticalSpeed.collectAsStateWithLifecycle()
-                val tilt by vm.directMaxTilt.collectAsStateWithLifecycle()
-                val anyThrottled = listOfNotNull(rot, vert, tilt).any { it.throttled }
-
-                HorizontalDivider()
-                Text("Performances", style = MaterialTheme.typography.titleSmall)
-                SettingLine("Rotation (yaw)", rot, "°/s")
-                SettingLine("Vitesse verticale", vert, "m/s")
-                SettingLine("Inclinaison max", tilt, "°")
-                if (anyThrottled) {
-                    Text(
-                        "Le drone est en dessous de ce qu'il sait faire",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = Color(0xFFEF6C00),
-                    )
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = vm::directPerfModerate) { Text("Modéré") }
-                    OutlinedButton(onClick = vm::directPerfMax) { Text("Max") }
-                }
-                Text(
-                    "« Max » = 200 °/s et 35° d'inclinaison : très nerveux, à éviter tant que le drone n'est pas en main",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.outline,
-                )
-            }
-
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (!connected) {
                     Button(onClick = vm::directConnect) { Text("Connecter") }
@@ -339,11 +313,63 @@ private fun DirectCard(vm: DroneViewModel) {
     }
 }
 
+/**
+ * Limites de performance du drone, communes aux deux voies : les commandes de
+ * réglage sont des ARCommands ardrone3 ordinaires, que le SC2 relaie comme le
+ * ferait un lien Wi-Fi direct. Sortie de la carte « connexion directe » le
+ * jour où le mode manette en a eu besoin lui aussi.
+ */
+@Composable
+private fun PerformanceCard(vm: DroneViewModel) {
+    val rot by vm.anyMaxRotationSpeed.collectAsStateWithLifecycle()
+    val vert by vm.anyMaxVerticalSpeed.collectAsStateWithLifecycle()
+    val tilt by vm.anyMaxTilt.collectAsStateWithLifecycle()
+    val known = listOfNotNull(rot, vert, tilt)
+    val throttled = known.any { it.throttled }
+
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("Performances du drone", style = MaterialTheme.typography.titleMedium)
+            SettingLine("Rotation (yaw)", rot, "°/s")
+            SettingLine("Vitesse verticale", vert, "m/s")
+            SettingLine("Inclinaison max", tilt, "°")
+
+            if (known.isEmpty()) {
+                // Les bornes viennent du drone (AllSettings) : sans elles il n'y
+                // a rien à interpoler, et un bouton actif enverrait une commande
+                // qui n'agirait sur rien — sans erreur visible.
+                Text(
+                    "Limites inconnues — le drone ne les a pas encore annoncées",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.outline,
+                )
+            } else if (throttled) {
+                Text(
+                    "Le drone est en dessous de ce qu'il sait faire",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color(0xFFEF6C00),
+                )
+            }
+
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = vm::perfModerate, enabled = known.isNotEmpty()) { Text("Modéré") }
+                OutlinedButton(onClick = vm::perfMax, enabled = known.isNotEmpty()) { Text("Max") }
+                OutlinedButton(onClick = vm::requestPerfSettings) { Text("Relire") }
+            }
+            Text(
+                "« Max » = 200 °/s et 35° d'inclinaison : très nerveux, à éviter tant que le drone n'est pas en main",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.outline,
+            )
+        }
+    }
+}
+
 /** Affiche « courant / max » et signale en orange un réglage bridé. */
 @Composable
 private fun SettingLine(
     label: String,
-    setting: io.dayd.bebop.network.DirectController.Setting?,
+    setting: io.dayd.bebop.arsdk.PerfSetting?,
     unit: String,
 ) {
     if (setting == null) {
